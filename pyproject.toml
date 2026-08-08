@@ -1,0 +1,45 @@
+[project]
+name = "multi-agent-research-system"
+version = "0.1.0"
+description = "A LangGraph-based multi-agent research system with deterministic search"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2.57",
+    "langchain>=0.3.13",
+    "langchain-core>=0.3.13",
+    "langchain-google-genai>=2.0.8",
+    "langchain-ollama>=0.2.0",
+    "langchain-openai>=0.2.0",
+    "langchain-community>=0.3.13",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "ddgs>=9.0.0",
+    "tavily-python>=0.5.0",
+    "httpx[http2]>=0.27.0",
+    "python-dotenv>=1.0.1",
+    "beautifulsoup4>=4.12.3",
+    "requests>=2.32.3",
+    "markdown>=3.7",
+    "pydantic>=2.10.6",
+    "aiohttp>=3.11.11",
+    "chainlit>=1.0.0",
+    "structlog>=24.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.4",
+    "black>=24.10.0",
+    "ruff>=0.8.4",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
