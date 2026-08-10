@@ -2,7 +2,7 @@
 
 一个基于 LangGraph 和 LangChain 构建的自主研究系统。系统通过规划、确定性搜索、信息综合和报告写作四个阶段，将一个研究问题转化为带来源与可信度评分的结构化报告。
 
-当前版本重点完成了 ResearchOS 的基础运行链：统一 State 契约、LLM Provider Factory、DeepSeek 支持、Deterministic Searcher V2、Tavily Provider Layer，以及完整 LangGraph Workflow。
+当前版本在稳定的 ResearchOS 基础运行链之上，增加了独立、可测试的 Evidence Layer 基线：标准化文档适配、文档级证据分析契约、注入式 ResultAnalyzer 和确定性 Finding Aggregator。
 
 ## 当前能力
 
@@ -16,8 +16,12 @@
 - Token、耗时和 LLM 调用记录
 - 文件缓存、内存/SQLite Checkpoint
 - CLI 与 Chainlit Web 界面
+- Evidence Layer：`SearchResult → Document → DocumentAnalysis / Evidence → Finding`
+- ResultAnalyzer：有界文本输入、content/snippet 降级、quote 验证、稳定 Evidence ID 与 partial failure 策略
+- Rule-based Finding Aggregator：按规范化 claim 聚类，过滤无效/未知来源 Evidence，并确定性计算 Finding confidence
+- 113 项无外部 API 的 pytest 回归测试
 
-Memory、Reflection、Supervisor 和 Evaluation 的 State 字段已经预留，但对应 Agent 逻辑尚未实现。
+Evidence Layer 当前保持独立，尚未接入 LangGraph、State 双写、Synthesizer 或 Writer。Memory、Reflection、Supervisor 和 Evaluation 的 State 字段也仍只处于预留状态。
 
 ## 工作流程
 
@@ -27,6 +31,17 @@ Memory、Reflection、Supervisor 和 Evaluation 的 State 字段已经预留，�
 2. `ResearchSearcher` 使用确定性 Executor 执行查询、调用搜索 Provider、去重 URL 并提取正文。
 3. `ResearchSynthesizer` 基于搜索结果生成关键发现。
 4. `ReportWriter` 按大纲生成章节、引用来源并汇编最终报告。
+
+Evidence Layer 目前可独立调用与测试，尚不改变上述生产 Graph 拓扑：
+
+```text
+SearchResult
+  -> Document Adapter
+  -> ResultAnalyzer
+  -> DocumentAnalysis + Evidence
+  -> Rule-based Finding Aggregator
+  -> Finding
+```
 
 ## 环境要求
 
@@ -187,6 +202,12 @@ Multi-Agent-Research-System/
 │   │       ├── factory.py        # SearchProviderFactory
 │   │       ├── models.py         # ProviderSearchResult
 │   │       └── tavily.py         # TavilyProvider
+│   ├── evidence/
+│   │   ├── adapters.py            # SearchResult -> Document
+│   │   ├── models.py              # DocumentAnalysis、Evidence、AnalysisResult
+│   │   ├── service.py             # 注入式 ResultAnalyzer
+│   │   ├── finding_models.py      # Finding 聚合契约
+│   │   └── aggregation.py         # 确定性 Finding Aggregator
 │   ├── prompts/                  # Agent提示词
 │   └── utils/                    # Tools、缓存、引用和网页处理
 ├── app.py                        # Chainlit入口
@@ -206,18 +227,16 @@ Planner → Searcher → Synthesizer → Writer → final_report
 
 测试中成功生成搜索结果、关键发现、8个报告章节和最终 Markdown 报告。
 
-## 开发检查
+## 测试与开发检查
 
 ```bash
 python -m pip check
-pytest -v
+pytest -q tests
 ```
 
+当前测试覆盖 State 兼容、LLM Factory、Search Runtime、Tavily Provider、Tool Adapter、Evidence 模型与 Adapter、ResultAnalyzer，以及 Finding 聚合基线；全部使用 fake 输入，不调用真实 LLM、Provider 或网页。
+
 新增搜索 Provider 时，实现 `src/search/providers/base.py` 中的 `SearchProvider` 接口，并在 `SearchProviderFactory` 注册。Provider异常必须使用结构化异常，不能将网络故障转换为正常空列表。
-
-## License
-
-MIT License，详见 [LICENSE](LICENSE)。
 
 ## Acknowledgements
 
