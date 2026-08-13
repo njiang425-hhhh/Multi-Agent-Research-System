@@ -6,6 +6,7 @@
 
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
+from src.evidence.contracts import DocumentAnalysis, Evidence
 
 
 class SearchQuery(BaseModel):
@@ -113,6 +114,21 @@ class UsageMetrics(BaseModel):
     estimated_cost: Optional[float] = Field(default=None, description="估算成本")
 
 
+class EvidenceDiagnostics(BaseModel):
+    """Serializable sidecar diagnostics that never represent the top-level run error."""
+
+    status: Literal["not_run", "disabled", "completed", "partial", "failed"] = "not_run"
+    source: Literal["none", "p2_documents", "legacy_search_results_backfill"] = "none"
+    analyzer_completed: bool = False
+    analyzer_partial: bool = False
+    aggregation_attempted: bool = False
+    aggregation_completed: bool = False
+    aggregation_partial: bool = False
+    analyzer_errors: List[str] = Field(default_factory=list)
+    aggregation_errors: List[str] = Field(default_factory=list)
+    sidecar_errors: List[str] = Field(default_factory=list)
+
+
 class MemoryItem(BaseModel):
     """未来 Memory Agent 使用的检索记忆项。"""
 
@@ -198,6 +214,18 @@ class ResearchState(BaseModel):
     findings: List[Finding] = Field(
         default_factory=list,
         description="V1 带证据引用能力的研究发现"
+    )
+    document_analyses: List[DocumentAnalysis] = Field(
+        default_factory=list,
+        description="Evidence Layer 文档分析结果"
+    )
+    evidence: List[Evidence] = Field(
+        default_factory=list,
+        description="Evidence Layer 可追溯证据"
+    )
+    evidence_diagnostics: EvidenceDiagnostics = Field(
+        default_factory=EvidenceDiagnostics,
+        description="Evidence sidecar 诊断信息"
     )
     report: Optional[Report] = Field(default=None, description="V1 标准报告")
     agent_trace: List[AgentTraceEvent] = Field(

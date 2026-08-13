@@ -248,11 +248,11 @@ class ResultAnalyzer:
 
     @staticmethod
     def _resolve_quote_span(source_text: str, draft: EvidenceDraft) -> Optional[tuple[int, int]]:
-        if draft.source_start is not None and draft.source_end is not None:
-            if source_text[draft.source_start : draft.source_end] == draft.source_quote:
-                return draft.source_start, draft.source_end
-            return None
+        """Compute the sole persisted span from one exact source-text match.
 
+        Draft offsets are untrusted model metadata and never participate in
+        grounding. A quote must occur exactly once in the original text.
+        """
         first_index = source_text.find(draft.source_quote)
         if first_index < 0:
             return None

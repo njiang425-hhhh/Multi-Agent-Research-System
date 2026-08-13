@@ -45,7 +45,11 @@ def _document(document_id: str, **overrides: object) -> Document:
     return Document(**values)
 
 
-def _draft_with_evidence(source_quote: str, start: int, end: int) -> DocumentAnalysisDraft:
+def _draft_with_evidence(
+    source_quote: str,
+    start: int | None = None,
+    end: int | None = None,
+) -> DocumentAnalysisDraft:
     return DocumentAnalysisDraft(
         relevance_score=0.9,
         key_points=["The source is directly relevant."],
@@ -90,6 +94,35 @@ def test_result_analyzer_builds_grounded_evidence_from_content() -> None:
     assert result.evidence[0].evidence_id.startswith("evidence:")
     assert result.evidence[0].status == "grounded"
     assert result.analyses[0].evidence_ids == [result.evidence[0].evidence_id]
+
+
+def test_result_analyzer_grounds_unique_quote_with_runtime_offsets_regardless_of_draft_offsets() -> None:
+    source_text = "Before. The primary source supports the claim. After."
+    quote = "The primary source supports the claim."
+    expected_start = source_text.index(quote)
+    expected_end = expected_start + len(quote)
+    document = _document("doc-1", content=source_text)
+    drafts = [
+        _draft_with_evidence(quote, expected_start, expected_end),
+        _draft_with_evidence(quote, 0, 1),
+        _draft_with_evidence(quote),
+    ]
+
+    evidence = [
+        asyncio.run(
+            ResultAnalyzer(FakeAnalyzerModel(lambda _, draft=draft: draft)).analyze(
+                topic="Research topic", documents=[document]
+            )
+        ).evidence[0]
+        for draft in drafts
+    ]
+
+    assert [(item.source_start, item.source_end) for item in evidence] == [
+        (expected_start, expected_end),
+        (expected_start, expected_end),
+        (expected_start, expected_end),
+    ]
+    assert len({item.evidence_id for item in evidence}) == 1
 
 
 def test_result_analyzer_uses_snippet_when_content_is_missing() -> None:
@@ -148,6 +181,32 @@ def test_result_analyzer_marks_unverifiable_quotes_as_partial() -> None:
     assert result.analyses[0].evidence_ids == []
     assert result.analyses[0].status == "partial"
     assert result.partial is True
+    assert "could not be uniquely validated" in result.errors[0]
+
+
+@pytest.mark.parametrize(
+    "quote, source_text",
+    [
+        ("The source supports the claim.", "The source supports the claim. The source supports the claim."),
+        ("The source  supports the claim.", "The source supports the claim."),
+        ("The source supports the claim.", "the source supports the claim."),
+        ("Café supports the claim.", "Cafe\u0301 supports the claim."),
+    ],
+)
+def test_result_analyzer_rejects_non_unique_or_non_exact_quotes_even_with_draft_offsets(
+    quote: str,
+    source_text: str,
+) -> None:
+    model = FakeAnalyzerModel(lambda _: _draft_with_evidence(quote, 0, len(quote)))
+
+    result = asyncio.run(
+        ResultAnalyzer(model).analyze(
+            topic="Research topic", documents=[_document("doc-1", content=source_text)]
+        )
+    )
+
+    assert result.evidence == []
+    assert result.analyses[0].status == "partial"
     assert "could not be uniquely validated" in result.errors[0]
 
 

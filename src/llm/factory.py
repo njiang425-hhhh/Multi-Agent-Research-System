@@ -5,7 +5,7 @@ src.agents.get_llm() 一致；业务 Agent 只依赖 BaseChatModel 接口。
 """
 
 import logging
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
@@ -21,6 +21,7 @@ def get_llm(
     temperature: float = 0.7,
     model_override: Optional[str] = None,
     provider_override: Optional[str] = None,
+    extra_body: Optional[Mapping[str, Any]] = None,
 ) -> BaseChatModel:
     """根据配置创建 LLM 实例。
 
@@ -35,6 +36,7 @@ def get_llm(
 
     model_name = model_override or config.model_name
     provider = provider_override or config.model_provider
+    chat_openai_extra = {"extra_body": extra_body} if extra_body is not None else {}
 
     if provider == "ollama":
         logger.info(f"使用 Ollama 模型：{model_name}")
@@ -52,6 +54,7 @@ def get_llm(
             base_url=f"{config.openai_base_url}/v1",
             api_key=config.openai_api_key,
             temperature=temperature,
+            **chat_openai_extra,
         )
 
     if provider == "deepseek":
@@ -61,6 +64,7 @@ def get_llm(
             base_url=config.deepseek_base_url,
             api_key=config.deepseek_api_key,
             temperature=temperature,
+            **chat_openai_extra,
         )
 
     if provider == "llamacpp":
@@ -70,6 +74,7 @@ def get_llm(
             base_url=f"{config.llamacpp_base_url}/v1",
             api_key="not-needed",
             temperature=temperature,
+            **chat_openai_extra,
         )
 
     # 保持原逻辑：未匹配到其他 Provider 时使用 Gemini。

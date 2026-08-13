@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 from hashlib import sha256
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from src.state import Document, SearchResult
@@ -89,3 +89,26 @@ def search_result_to_document(
         credibility=deepcopy(dict(credibility)) if credibility is not None else None,
         status="retrieved" if has_content else "content_unavailable",
     )
+
+
+def scored_search_results_to_documents(
+    scored_results: Iterable[tuple[SearchResult, Mapping[str, Any]]],
+) -> list[Document]:
+    """Convert explicitly paired, credibility-filtered results into Documents.
+
+    The caller supplies each ``SearchResult`` together with its own credibility
+    record.  This deliberately avoids reconstructing that association from
+    separate State lists.  Documents are deduplicated by their stable adapter
+    identity while leaving the legacy result sequence untouched.
+    """
+    documents: list[Document] = []
+    seen_document_ids: set[str] = set()
+
+    for result, credibility in scored_results:
+        document = search_result_to_document(result, credibility=credibility)
+        if document.document_id in seen_document_ids:
+            continue
+        seen_document_ids.add(document.document_id)
+        documents.append(document)
+
+    return documents

@@ -1,7 +1,7 @@
 """带依赖注入的研究流程代理节点。"""
 
 import asyncio
-from typing import List, Optional, Dict, Any, Protocol
+from typing import Callable, List, Optional, Dict, Any, Protocol
 import logging
 import time
 import json
@@ -12,7 +12,15 @@ from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 from langchain_core.language_models import BaseChatModel
 from langchain.agents import create_agent
 
-from src.state import ResearchState, ResearchPlan, SearchQuery, ReportSection, SearchResult
+from src.state import (
+    EvidenceDiagnostics,
+    Finding,
+    ResearchState,
+    ResearchPlan,
+    SearchQuery,
+    ReportSection,
+    SearchResult,
+)
 from src.llm.factory import get_llm
 from src.utils.tools import get_research_tools
 from src.config import config
@@ -22,6 +30,10 @@ from src.llm_tracker import estimate_tokens
 from src.exceptions import PlanningError, SearchError, SynthesisError, ReportGenerationError
 from src.search.config import SearchConfig
 from src.search.executor import SearchExecutor
+from src.evidence.adapters import scored_search_results_to_documents
+from src.evidence.compat import key_findings_to_findings
+from src.evidence.config import EvidenceRuntimeConfig
+from src.evidence.sidecar import EvidenceSidecarResult, EvidenceSidecarService
 from src.prompts import (
     PLANNER_SYSTEM_PROMPT, PLANNER_USER_TEMPLATE,
     SEARCHER_SYSTEM_PROMPT, SEARCHER_USER_TEMPLATE,
@@ -291,6 +303,10 @@ class ResearchSearcher:
                 
                 credibility_scores = [item['credibility'] for item in filtered_scored]
                 sorted_results = [item['result'] for item in filtered_scored]
+                documents = scored_search_results_to_documents(
+                    (item["result"], item["credibility"])
+                    for item in filtered_scored
+                )
                 
                 logger.info(f"已过滤 {len(search_results)} -> {len(sorted_results)} 个结果（最低可信度={config.min_credibility_score}）")
                 
@@ -313,6 +329,7 @@ class ResearchSearcher:
                 return {
                     "search_results": sorted_results,
                     "credibility_scores": credibility_scores,
+                    "documents": documents,
                     "current_stage": "synthesizing",
                     "iterations": state.iterations + 1,
                     "llm_calls": state.llm_calls + 1,
@@ -392,6 +409,10 @@ class ResearchSearcher:
         ]
         credibility_scores = [item["credibility"] for item in filtered_scored]
         sorted_results = [item["result"] for item in filtered_scored]
+        documents = scored_search_results_to_documents(
+            (item["result"], item["credibility"])
+            for item in filtered_scored
+        )
 
         for query in state.plan.search_queries:
             query.completed = True
@@ -418,6 +439,7 @@ class ResearchSearcher:
         return {
             "search_results": sorted_results,
             "credibility_scores": credibility_scores,
+            "documents": documents,
             "error": None,
             "current_stage": "synthesizing",
             "iterations": state.iterations + 1,
@@ -474,10 +496,20 @@ class ResearchSearcher:
 class ResearchSynthesizer:
     """负责综合研究发现的自主代理。"""
     
-    def __init__(self, llm: Optional[BaseChatModel] = None, max_retries: int = 3):
+    def __init__(
+        self,
+        llm: Optional[BaseChatModel] = None,
+        max_retries: int = 3,
+        evidence_config: Optional[EvidenceRuntimeConfig] = None,
+        sidecar_factory: Optional[Callable[[], EvidenceSidecarService]] = None,
+    ):
         self.llm = llm or get_llm(temperature=0.3, model_override=config.summarization_model)
         self.tools = get_research_tools(agent_type="synthesis")
         self.max_retries = max_retries
+        self.evidence_config = evidence_config or EvidenceRuntimeConfig.from_environment()
+        self.sidecar_factory = sidecar_factory or (
+            lambda: EvidenceSidecarService.create_production(config=self.evidence_config)
+        )
         
     async def synthesize(self, state: ResearchState) -> Dict[str, Any]:
         """使用工具和推理自主综合关键发现。
@@ -500,6 +532,7 @@ class ResearchSynthesizer:
         
         max_results = 20
         
+        success_patch: Optional[Dict[str, Any]] = None
         for attempt in range(self.max_retries):
             try:
                 start_time = time.time()
@@ -543,13 +576,15 @@ class ResearchSynthesizer:
                 }
                 
                 key_findings = self._extract_findings(output_text, state.search_results)
+                findings = key_findings_to_findings(key_findings)
                 
                 logger.info(f"已提取 {len(key_findings)} 条关键发现")
                 
                 await emit_synthesis_complete(len(key_findings))
                 
-                return {
+                success_patch = {
                     "key_findings": key_findings,
+                    "findings": findings,
                     "current_stage": "reporting",
                     "iterations": state.iterations + 1,
                     "llm_calls": state.llm_calls + 1,
@@ -557,6 +592,7 @@ class ResearchSynthesizer:
                     "total_output_tokens": state.total_output_tokens + output_tokens,
                     "llm_call_details": state.llm_call_details + [call_detail]
                 }
+                break
                 
             except Exception as e:
                 logger.warning(f"第 {attempt + 1} 次综合尝试失败：{str(e)}")
@@ -570,10 +606,95 @@ class ResearchSynthesizer:
                 else:
                     await asyncio.sleep(2 ** attempt)
         
-        return {
-            "error": "综合失败：已超过最大重试次数",
-            "iterations": state.iterations + 1
-        }
+        if success_patch is None:
+            return {
+                "error": "综合失败：已超过最大重试次数",
+                "iterations": state.iterations + 1
+            }
+
+        return await self._merge_evidence_sidecar(state, success_patch)
+
+    async def _merge_evidence_sidecar(
+        self,
+        state: ResearchState,
+        success_patch: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Attach optional Evidence output without affecting legacy synthesis success."""
+        if not self.evidence_config.enabled:
+            success_patch["evidence_diagnostics"] = EvidenceDiagnostics(
+                status="disabled",
+                source=self._evidence_source(state),
+            )
+            return success_patch
+
+        if not success_patch["key_findings"]:
+            success_patch["evidence_diagnostics"] = EvidenceDiagnostics(
+                status="not_run",
+                source=self._evidence_source(state),
+            )
+            return success_patch
+
+        try:
+            sidecar = self.sidecar_factory()
+            sidecar_result = await sidecar.run(
+                topic=state.research_topic,
+                documents=state.documents,
+                search_results=state.search_results,
+                objectives=state.plan.objectives if state.plan else (),
+            )
+        except Exception as exc:
+            success_patch["evidence_diagnostics"] = EvidenceDiagnostics(
+                status="failed",
+                source=self._evidence_source(state),
+                sidecar_errors=[f"Evidence sidecar integration failed: {exc}"],
+            )
+            return success_patch
+
+        success_patch["document_analyses"] = sidecar_result.document_analyses
+        success_patch["evidence"] = sidecar_result.evidence
+        success_patch["evidence_diagnostics"] = sidecar_result.diagnostics
+        if sidecar_result.diagnostics.source == "legacy_search_results_backfill":
+            success_patch["documents"] = sidecar_result.documents
+        if self._can_adopt_evidence_findings(sidecar_result):
+            success_patch["findings"] = sidecar_result.findings
+
+        success_patch["llm_calls"] += sidecar_result.llm_calls_delta
+        success_patch["total_input_tokens"] += sidecar_result.input_tokens_delta
+        success_patch["total_output_tokens"] += sidecar_result.output_tokens_delta
+        success_patch["llm_call_details"] = (
+            success_patch["llm_call_details"] + sidecar_result.llm_call_details
+        )
+        return success_patch
+
+    def _can_adopt_evidence_findings(self, result: EvidenceSidecarResult) -> bool:
+        """Accept only fully reference-valid Findings allowed by sidecar diagnostics."""
+        diagnostics = result.diagnostics
+        partial_allowed = self.evidence_config.analyzer.allow_partial_results
+        diagnostics_allow_adoption = (
+            diagnostics.aggregation_attempted
+            and (diagnostics.aggregation_completed or (diagnostics.aggregation_partial and partial_allowed))
+            and (
+                diagnostics.analyzer_completed
+                or (diagnostics.analyzer_partial and partial_allowed)
+            )
+        )
+        if not diagnostics_allow_adoption or not result.findings:
+            return False
+
+        evidence_ids = {item.evidence_id for item in result.evidence}
+        for finding in result.findings:
+            references = set(finding.evidence_refs) | set(finding.contradictory_evidence_refs)
+            if not references or not references.issubset(evidence_ids):
+                return False
+        return True
+
+    @staticmethod
+    def _evidence_source(state: ResearchState) -> str:
+        if state.documents:
+            return "p2_documents"
+        if state.search_results:
+            return "legacy_search_results_backfill"
+        return "none"
     
     def _format_results_text(self, results: list, credibility_scores: list) -> str:
         """格式化带可信度信息的搜索结果。"""

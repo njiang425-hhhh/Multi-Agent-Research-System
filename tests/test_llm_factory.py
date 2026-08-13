@@ -53,6 +53,22 @@ def test_get_llm_selects_deepseek_and_preserves_compatible_base_url(
     }
 
 
+def test_get_llm_passes_explicit_extra_body_only_to_chat_openai(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_llm_clients: None,
+) -> None:
+    monkeypatch.setattr(factory_module.config, "model_provider", "deepseek")
+    monkeypatch.setattr(factory_module.config, "model_name", "deepseek-v4-pro")
+    monkeypatch.setattr(factory_module.config, "deepseek_base_url", "https://deepseek.invalid")
+    monkeypatch.setattr(factory_module.config, "deepseek_api_key", "fake-deepseek-key")
+    extra_body = {"thinking": {"type": "disabled"}}
+
+    llm = factory_module.get_llm(extra_body=extra_body)
+
+    assert isinstance(llm, FakeChatOpenAI)
+    assert llm.kwargs["extra_body"] == extra_body
+
+
 def test_get_llm_selects_openai_and_appends_v1_to_base_url(
     monkeypatch: pytest.MonkeyPatch,
     fake_llm_clients: None,
