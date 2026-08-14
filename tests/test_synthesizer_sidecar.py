@@ -172,6 +172,12 @@ def test_successful_sidecar_persists_outputs_and_replaces_only_with_valid_eviden
     assert patch["total_input_tokens"] >= 51
     assert patch["total_output_tokens"] >= 27
     assert len(patch["llm_call_details"]) == 4
+    assert patch["usage"].llm_calls == patch["llm_calls"]
+    assert patch["usage"].input_tokens == patch["total_input_tokens"]
+    assert patch["usage"].output_tokens == patch["total_output_tokens"]
+    assert patch["usage"].total_tokens == (
+        patch["usage"].input_tokens + patch["usage"].output_tokens
+    )
     assert sidecar.calls[0]["documents"] == state.documents
 
 

@@ -156,6 +156,37 @@ def test_research_state_does_not_automatically_sync_v1_and_legacy_fields() -> No
     assert legacy_only_state.findings == []
 
 
+def test_legacy_checkpoint_payload_is_not_hydrated_with_v1_fields() -> None:
+    """Legacy checkpoints remain valid without automatically backfilling V1 data."""
+    legacy_plan = ResearchPlan(
+        topic="legacy topic",
+        objectives=["preserve compatibility"],
+        search_queries=[],
+        report_outline=[],
+    )
+
+    restored = ResearchState.model_validate({
+        "research_topic": "legacy topic",
+        "plan": legacy_plan.model_dump(),
+        "key_findings": ["legacy finding"],
+        "final_report": "legacy report",
+        "llm_calls": 2,
+        "total_input_tokens": 10,
+        "total_output_tokens": 5,
+    })
+
+    assert restored.research_topic == "legacy topic"
+    assert restored.plan == legacy_plan
+    assert restored.key_findings == ["legacy finding"]
+    assert restored.final_report == "legacy report"
+    assert restored.query == ""
+    assert restored.research_plan is None
+    assert restored.documents == []
+    assert restored.findings == []
+    assert restored.report is None
+    assert restored.usage == UsageMetrics()
+
+
 def test_research_state_requires_legacy_research_topic() -> None:
     """The current entry contract still requires research_topic."""
     with pytest.raises(ValidationError):

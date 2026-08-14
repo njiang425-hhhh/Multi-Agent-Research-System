@@ -18,8 +18,10 @@ from src.state import (
     ResearchState,
     ResearchPlan,
     SearchQuery,
+    Report,
     ReportSection,
     SearchResult,
+    UsageMetrics,
 )
 from src.llm.factory import get_llm
 from src.utils.tools import get_research_tools
@@ -58,6 +60,73 @@ SEARCHER_AGENT_RECURSION_LIMIT = 12
 SEARCHER_AGENT_TIMEOUT_SECONDS = 90
 
 
+def _research_query(state: ResearchState) -> str:
+    """Read the V1 task field, preserving legacy-only checkpoint support."""
+    return state.query or state.research_topic
+
+
+def _research_plan(state: ResearchState) -> Optional[ResearchPlan]:
+    """Read the V1 plan field, preserving legacy-only checkpoint support."""
+    return state.research_plan or state.plan
+
+
+def _usage_from_legacy_totals(
+    state: ResearchState,
+    *,
+    llm_calls: int,
+    total_input_tokens: int,
+    total_output_tokens: int,
+) -> UsageMetrics:
+    """Explicitly mirror final legacy tracking totals into V1 UsageMetrics."""
+    return UsageMetrics(
+        llm_calls=llm_calls,
+        tool_calls=state.usage.tool_calls,
+        input_tokens=total_input_tokens,
+        output_tokens=total_output_tokens,
+        total_tokens=total_input_tokens + total_output_tokens,
+        latency_seconds=state.usage.latency_seconds,
+        estimated_cost=state.usage.estimated_cost,
+    )
+
+
+def _report_citations(
+    search_results: List[SearchResult],
+    report_sections: List[ReportSection],
+) -> List[str]:
+    """Project report sources into an ordered, stable, de-duplicated URL list."""
+    citations: List[str] = []
+    seen_urls = set()
+
+    for result in search_results:
+        url = getattr(result, "url", "")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            citations.append(url)
+
+    for section in report_sections:
+        for url in getattr(section, "sources", []) or []:
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                citations.append(url)
+
+    return citations
+
+
+def _legacy_report_to_v1(
+    state: ResearchState,
+    report_sections: List[ReportSection],
+    final_report: str,
+) -> Report:
+    """Explicitly project successful legacy Writer output into the V1 contract."""
+    return Report(
+        title=state.research_topic,
+        sections=list(report_sections),
+        content=final_report,
+        citations=_report_citations(state.search_results, report_sections),
+        status="completed",
+    )
+
+
 # =============================================================================
 # 研究规划代理
 # =============================================================================
@@ -74,9 +143,10 @@ class ResearchPlanner:
         
         返回将由 LangGraph 合并到状态中的更新字典。
         """
-        logger.info(f"正在规划研究：{state.research_topic}")
+        topic = _research_query(state)
+        logger.info(f"正在规划研究：{topic}")
         
-        await emit_planning_start(state.research_topic)
+        await emit_planning_start(topic)
         
         system_prompt = PLANNER_SYSTEM_PROMPT.format(
             max_queries=config.max_search_queries,
@@ -93,11 +163,11 @@ class ResearchPlanner:
                 start_time = time.time()
                 chain = prompt | self.llm | JsonOutputParser()
                 
-                input_text = f"{state.research_topic} {config.max_search_queries} {config.max_report_sections}"
+                input_text = f"{topic} {config.max_search_queries} {config.max_report_sections}"
                 input_tokens = estimate_tokens(input_text)
                 
                 result = await chain.ainvoke({
-                    "topic": state.research_topic,
+                    "topic": topic,
                     "max_queries": config.max_search_queries,
                     "max_sections": config.max_report_sections
                 })
@@ -138,12 +208,19 @@ class ResearchPlanner:
                 
                 return {
                     "plan": plan,
+                    "research_plan": plan,
                     "current_stage": "searching",
                     "iterations": state.iterations + 1,
                     "llm_calls": state.llm_calls + 1,
                     "total_input_tokens": state.total_input_tokens + input_tokens,
                     "total_output_tokens": state.total_output_tokens + output_tokens,
-                    "llm_call_details": state.llm_call_details + [call_detail]
+                    "llm_call_details": state.llm_call_details + [call_detail],
+                    "usage": _usage_from_legacy_totals(
+                        state,
+                        llm_calls=state.llm_calls + 1,
+                        total_input_tokens=state.total_input_tokens + input_tokens,
+                        total_output_tokens=state.total_output_tokens + output_tokens,
+                    ),
                 }
                 
             except Exception as e:
@@ -190,17 +267,18 @@ class ResearchSearcher:
         
         返回将由 LangGraph 合并到状态中的搜索结果字典。
         """
-        if not state.plan:
+        plan = _research_plan(state)
+        if not plan:
             await emit_error("没有可用的研究计划")
             return {"error": "没有可用的研究计划"}
 
         if self.search_config.mode == "deterministic_v2":
             return await self._search_with_executor(state)
         
-        logger.info(f"自主代理开始研究：已规划 {len(state.plan.search_queries)} 个查询")
+        logger.info(f"自主代理开始研究：已规划 {len(plan.search_queries)} 个查询")
         
-        total_queries = len(state.plan.search_queries)
-        for i, query in enumerate(state.plan.search_queries, 1):
+        total_queries = len(plan.search_queries)
+        for i, query in enumerate(plan.search_queries, 1):
             await emit_search_start(query.query, i, total_queries)
         
         max_searches = min(config.max_search_queries, 3)
@@ -226,14 +304,14 @@ class ResearchSearcher:
             try:
                 start_time = time.time()
                 
-                objectives_text = "\n".join(f"- {obj}" for obj in state.plan.objectives)
+                objectives_text = "\n".join(f"- {obj}" for obj in plan.objectives)
                 queries_text = "\n".join(
                     f"- {q.query} (Purpose: {q.purpose})" 
-                    for q in state.plan.search_queries
+                    for q in plan.search_queries
                 )
                 
                 input_message = SEARCHER_USER_TEMPLATE.format(
-                    topic=state.research_topic,
+                    topic=_research_query(state),
                     objectives=objectives_text,
                     queries=queries_text,
                     min_sources=target_sources,
@@ -310,7 +388,7 @@ class ResearchSearcher:
                 
                 logger.info(f"已过滤 {len(search_results)} -> {len(sorted_results)} 个结果（最低可信度={config.min_credibility_score}）")
                 
-                for q in state.plan.search_queries:
+                for q in plan.search_queries:
                     q.completed = True
                 
                 call_detail = {
@@ -335,7 +413,13 @@ class ResearchSearcher:
                     "llm_calls": state.llm_calls + 1,
                     "total_input_tokens": state.total_input_tokens + input_tokens,
                     "total_output_tokens": state.total_output_tokens + output_tokens,
-                    "llm_call_details": state.llm_call_details + [call_detail]
+                    "llm_call_details": state.llm_call_details + [call_detail],
+                    "usage": _usage_from_legacy_totals(
+                        state,
+                        llm_calls=state.llm_calls + 1,
+                        total_input_tokens=state.total_input_tokens + input_tokens,
+                        total_output_tokens=state.total_output_tokens + output_tokens,
+                    ),
                 }
                 
             except SearchError as e:
@@ -369,17 +453,22 @@ class ResearchSearcher:
 
     async def _search_with_executor(self, state: ResearchState) -> Dict[str, Any]:
         """Run deterministic_v2 while preserving the legacy Agent contract."""
+        plan = _research_plan(state)
+        if not plan:
+            await emit_error("没有可用的研究计划")
+            return {"error": "没有可用的研究计划"}
+
         logger.info(
             "Deterministic Search Executor 开始研究：已规划 "
-            f"{len(state.plan.search_queries)} 个查询"
+            f"{len(plan.search_queries)} 个查询"
         )
 
-        total_queries = len(state.plan.search_queries)
-        for i, query in enumerate(state.plan.search_queries, 1):
+        total_queries = len(plan.search_queries)
+        for i, query in enumerate(plan.search_queries, 1):
             await emit_search_start(query.query, i, total_queries)
 
         execution = await self.search_executor.execute(
-            state.plan.search_queries,
+            plan.search_queries,
             max_results_per_search=self.search_config.max_results_per_search,
         )
 
@@ -414,7 +503,7 @@ class ResearchSearcher:
             for item in filtered_scored
         )
 
-        for query in state.plan.search_queries:
+        for query in plan.search_queries:
             query.completed = True
 
         call_detail = {
@@ -447,6 +536,12 @@ class ResearchSearcher:
             "total_input_tokens": state.total_input_tokens,
             "total_output_tokens": state.total_output_tokens,
             "llm_call_details": state.llm_call_details + [call_detail],
+            "usage": _usage_from_legacy_totals(
+                state,
+                llm_calls=state.llm_calls,
+                total_input_tokens=state.total_input_tokens,
+                total_output_tokens=state.total_output_tokens,
+            ),
         }
     
     def _extract_results_from_messages(self, messages: list) -> List[SearchResult]:
@@ -516,6 +611,7 @@ class ResearchSynthesizer:
         
         返回将由 LangGraph 合并到状态中的关键发现字典。
         """
+        topic = _research_query(state)
         logger.info(f"正在从 {len(state.search_results)} 个结果中综合研究发现")
         
         if not state.search_results:
@@ -545,7 +641,7 @@ class ResearchSynthesizer:
                 results_text = self._format_results_text(results_to_use, credibility_scores_to_use)
                 
                 input_message = SYNTHESIZER_USER_TEMPLATE.format(
-                    topic=state.research_topic,
+                    topic=topic,
                     results=results_text
                 )
                 
@@ -590,7 +686,13 @@ class ResearchSynthesizer:
                     "llm_calls": state.llm_calls + 1,
                     "total_input_tokens": state.total_input_tokens + input_tokens,
                     "total_output_tokens": state.total_output_tokens + output_tokens,
-                    "llm_call_details": state.llm_call_details + [call_detail]
+                    "llm_call_details": state.llm_call_details + [call_detail],
+                    "usage": _usage_from_legacy_totals(
+                        state,
+                        llm_calls=state.llm_calls + 1,
+                        total_input_tokens=state.total_input_tokens + input_tokens,
+                        total_output_tokens=state.total_output_tokens + output_tokens,
+                    ),
                 }
                 break
                 
@@ -620,6 +722,7 @@ class ResearchSynthesizer:
         success_patch: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Attach optional Evidence output without affecting legacy synthesis success."""
+        plan = _research_plan(state)
         if not self.evidence_config.enabled:
             success_patch["evidence_diagnostics"] = EvidenceDiagnostics(
                 status="disabled",
@@ -637,10 +740,10 @@ class ResearchSynthesizer:
         try:
             sidecar = self.sidecar_factory()
             sidecar_result = await sidecar.run(
-                topic=state.research_topic,
+                topic=_research_query(state),
                 documents=state.documents,
                 search_results=state.search_results,
-                objectives=state.plan.objectives if state.plan else (),
+                objectives=plan.objectives if plan else (),
             )
         except Exception as exc:
             success_patch["evidence_diagnostics"] = EvidenceDiagnostics(
@@ -663,6 +766,12 @@ class ResearchSynthesizer:
         success_patch["total_output_tokens"] += sidecar_result.output_tokens_delta
         success_patch["llm_call_details"] = (
             success_patch["llm_call_details"] + sidecar_result.llm_call_details
+        )
+        success_patch["usage"] = _usage_from_legacy_totals(
+            state,
+            llm_calls=success_patch["llm_calls"],
+            total_input_tokens=success_patch["total_input_tokens"],
+            total_output_tokens=success_patch["total_output_tokens"],
         )
         return success_patch
 
@@ -842,16 +951,25 @@ class ReportWriter:
                 logger.info(f"报告生成完成：{len(final_report)} 个字符")
                 
                 await emit_writing_complete(len(final_report))
+
+                report = _legacy_report_to_v1(state, report_sections, final_report)
                 
                 return {
                     "report_sections": report_sections,
                     "final_report": final_report,
+                    "report": report,
                     "current_stage": "complete",
                     "iterations": state.iterations + 1,
                     "llm_calls": state.llm_calls + report_llm_calls,
                     "total_input_tokens": state.total_input_tokens + report_input_tokens,
                     "total_output_tokens": state.total_output_tokens + report_output_tokens,
-                    "llm_call_details": state.llm_call_details + report_call_details
+                    "llm_call_details": state.llm_call_details + report_call_details,
+                    "usage": _usage_from_legacy_totals(
+                        state,
+                        llm_calls=state.llm_calls + report_llm_calls,
+                        total_input_tokens=state.total_input_tokens + report_input_tokens,
+                        total_output_tokens=state.total_output_tokens + report_output_tokens,
+                    ),
                 }
                 
             except Exception as e:

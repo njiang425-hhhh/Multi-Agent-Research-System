@@ -220,7 +220,7 @@ async def run_research_with_updates(topic: str, progress_display: EnhancedProgre
     progress_callback.register_async(on_progress)
     
     try:
-        initial_state = ResearchState(research_topic=topic)
+        initial_state = ResearchState(research_topic=topic, query=topic)
         graph = create_research_graph()
         final_state = await graph.ainvoke(initial_state)
         

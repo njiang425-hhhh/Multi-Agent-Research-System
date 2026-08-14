@@ -193,6 +193,7 @@ class ResearchState(BaseModel):
 
     新字段是未来标准契约，旧字段保留用于兼容当前 Agent、Graph、CLI、
     Web 和持久化逻辑。本阶段不通过 alias 或校验器自动同步新旧字段。
+    Legacy checkpoint 保持其已存储的字段继续运行；缺失的 V1 字段不自动回填。
     """
 
     # State 契约版本

@@ -26,6 +26,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _create_initial_state(topic: str) -> ResearchState:
+    """Create the explicit V1/legacy task-field double write at graph entry."""
+    return ResearchState(research_topic=topic, query=topic)
+
+
 # =============================================================================
 # 检查点管理
 # =============================================================================
@@ -91,11 +96,12 @@ def create_research_graph(checkpointer=None):
             logger.error(f"规划失败：{state.error}")
             return END
         
-        if not state.plan or not state.plan.search_queries:
+        plan = state.research_plan or state.plan
+        if not plan or not plan.search_queries:
             logger.error("计划中未生成搜索查询")
             return END
             
-        logger.info(f"计划验证通过：{len(state.plan.search_queries)} 个查询")
+        logger.info(f"计划验证通过：{len(plan.search_queries)} 个查询")
         return "search"
     
     def should_continue_after_search(state: ResearchState) -> str:
@@ -198,7 +204,7 @@ async def run_research(
             logger.info("使用缓存的研究结果")
             return cached_result
     
-    initial_state = ResearchState(research_topic=topic)
+    initial_state = _create_initial_state(topic)
     
     run_config: Dict[str, Any] = {}
     
@@ -259,7 +265,7 @@ async def run_research_with_persistence(
             logger.info("使用缓存的研究结果")
             return cached_result
     
-    initial_state = ResearchState(research_topic=topic)
+    initial_state = _create_initial_state(topic)
     
     tid = thread_id or f"research-{uuid.uuid4().hex[:8]}"
     run_config = {"configurable": {"thread_id": tid}}
