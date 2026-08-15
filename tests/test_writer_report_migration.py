@@ -86,6 +86,9 @@ def test_writer_double_writes_a_v1_report_from_legacy_only_state(monkeypatch) ->
     assert patch["report"].report_id == ""
     assert patch["report"].version == 1
     assert patch["report"].status == "completed"
+    assert patch["iteration"] == state.iteration + 1
+    assert patch["current_stage"] == "complete"
+    assert patch["status"] == "completed"
 
 
 def test_writer_keeps_legacy_inputs_when_a_stale_v1_report_is_present(monkeypatch) -> None:
@@ -124,7 +127,11 @@ def test_writer_failure_paths_do_not_create_a_partial_v1_report(monkeypatch) -> 
     insufficient = ResearchState(research_topic="legacy topic")
     insufficient_patch = asyncio.run(ReportWriter(llm=object(), max_retries=1).write_report(insufficient))
 
-    assert insufficient_patch == {"error": "报告生成所需的数据不足"}
+    assert insufficient_patch == {
+        "error": "报告生成所需的数据不足",
+        "current_stage": "failed",
+        "status": "failed",
+    }
     assert "report" not in insufficient_patch
 
     writer = ReportWriter(llm=object(), max_retries=1)
@@ -138,5 +145,8 @@ def test_writer_failure_paths_do_not_create_a_partial_v1_report(monkeypatch) -> 
     assert failed_patch == {
         "error": "报告撰写失败：未生成报告章节",
         "iterations": 1,
+        "iteration": 1,
+        "current_stage": "failed",
+        "status": "failed",
     }
     assert "report" not in failed_patch

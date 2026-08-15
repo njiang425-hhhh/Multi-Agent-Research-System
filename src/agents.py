@@ -23,6 +23,7 @@ from src.state import (
     SearchResult,
     UsageMetrics,
 )
+from src.runtime_lifecycle import completed_lifecycle_patch, failed_lifecycle_patch
 from src.llm.factory import get_llm
 from src.utils.tools import get_research_tools
 from src.config import config
@@ -211,6 +212,7 @@ class ResearchPlanner:
                     "research_plan": plan,
                     "current_stage": "searching",
                     "iterations": state.iterations + 1,
+                    "iteration": state.iteration + 1,
                     "llm_calls": state.llm_calls + 1,
                     "total_input_tokens": state.total_input_tokens + input_tokens,
                     "total_output_tokens": state.total_output_tokens + output_tokens,
@@ -230,14 +232,18 @@ class ResearchPlanner:
                     await emit_error(f"规划失败：{str(e)}")
                     return {
                         "error": f"Planning failed: {str(e)}",
-                        "iterations": state.iterations + 1
+                        "iterations": state.iterations + 1,
+                        "iteration": state.iteration + 1,
+                        **failed_lifecycle_patch(),
                     }
                 else:
                     await asyncio.sleep(2 ** attempt)
         
         return {
             "error": "规划失败：已超过最大重试次数",
-            "iterations": state.iterations + 1
+            "iterations": state.iterations + 1,
+            "iteration": state.iteration + 1,
+            **failed_lifecycle_patch(),
         }
 
 
@@ -270,7 +276,7 @@ class ResearchSearcher:
         plan = _research_plan(state)
         if not plan:
             await emit_error("没有可用的研究计划")
-            return {"error": "没有可用的研究计划"}
+            return {"error": "没有可用的研究计划", **failed_lifecycle_patch()}
 
         if self.search_config.mode == "deterministic_v2":
             return await self._search_with_executor(state)
@@ -410,6 +416,7 @@ class ResearchSearcher:
                     "documents": documents,
                     "current_stage": "synthesizing",
                     "iterations": state.iterations + 1,
+                    "iteration": state.iteration + 1,
                     "llm_calls": state.llm_calls + 1,
                     "total_input_tokens": state.total_input_tokens + input_tokens,
                     "total_output_tokens": state.total_output_tokens + output_tokens,
@@ -429,7 +436,9 @@ class ResearchSearcher:
                     await emit_error(f"搜索失败：{e}")
                     return {
                         "error": f"搜索失败：{e}",
-                        "iterations": state.iterations + 1
+                        "iterations": state.iterations + 1,
+                        "iteration": state.iteration + 1,
+                        **failed_lifecycle_patch(),
                     }
                 else:
                     await asyncio.sleep(2 ** attempt)
@@ -441,14 +450,18 @@ class ResearchSearcher:
                     await emit_error(f"搜索失败：{search_error}")
                     return {
                         "error": f"搜索失败：{search_error}",
-                        "iterations": state.iterations + 1
+                        "iterations": state.iterations + 1,
+                        "iteration": state.iteration + 1,
+                        **failed_lifecycle_patch(),
                     }
                 else:
                     await asyncio.sleep(2 ** attempt)
         
         return {
             "error": "搜索失败：已超过最大重试次数",
-            "iterations": state.iterations + 1
+            "iterations": state.iterations + 1,
+            "iteration": state.iteration + 1,
+            **failed_lifecycle_patch(),
         }
 
     async def _search_with_executor(self, state: ResearchState) -> Dict[str, Any]:
@@ -456,7 +469,7 @@ class ResearchSearcher:
         plan = _research_plan(state)
         if not plan:
             await emit_error("没有可用的研究计划")
-            return {"error": "没有可用的研究计划"}
+            return {"error": "没有可用的研究计划", **failed_lifecycle_patch()}
 
         logger.info(
             "Deterministic Search Executor 开始研究：已规划 "
@@ -488,6 +501,8 @@ class ResearchSearcher:
                 "credibility_scores": [],
                 "error": f"搜索失败：{error}",
                 "iterations": state.iterations + 1,
+                "iteration": state.iteration + 1,
+                **failed_lifecycle_patch(),
             }
 
         scored_results = self.credibility_scorer.score_search_results(search_results)
@@ -532,6 +547,7 @@ class ResearchSearcher:
             "error": None,
             "current_stage": "synthesizing",
             "iterations": state.iterations + 1,
+            "iteration": state.iteration + 1,
             "llm_calls": state.llm_calls,
             "total_input_tokens": state.total_input_tokens,
             "total_output_tokens": state.total_output_tokens,
@@ -616,7 +632,7 @@ class ResearchSynthesizer:
         
         if not state.search_results:
             await emit_error("没有可供综合的搜索结果")
-            return {"error": "没有可供综合的搜索结果"}
+            return {"error": "没有可供综合的搜索结果", **failed_lifecycle_patch()}
         
         await emit_synthesis_start(len(state.search_results))
         
@@ -683,6 +699,7 @@ class ResearchSynthesizer:
                     "findings": findings,
                     "current_stage": "reporting",
                     "iterations": state.iterations + 1,
+                    "iteration": state.iteration + 1,
                     "llm_calls": state.llm_calls + 1,
                     "total_input_tokens": state.total_input_tokens + input_tokens,
                     "total_output_tokens": state.total_output_tokens + output_tokens,
@@ -703,7 +720,9 @@ class ResearchSynthesizer:
                     await emit_error(f"综合失败：{str(e)}")
                     return {
                         "error": f"综合失败：{str(e)}",
-                        "iterations": state.iterations + 1
+                        "iterations": state.iterations + 1,
+                        "iteration": state.iteration + 1,
+                        **failed_lifecycle_patch(),
                     }
                 else:
                     await asyncio.sleep(2 ** attempt)
@@ -711,7 +730,9 @@ class ResearchSynthesizer:
         if success_patch is None:
             return {
                 "error": "综合失败：已超过最大重试次数",
-                "iterations": state.iterations + 1
+                "iterations": state.iterations + 1,
+                "iteration": state.iteration + 1,
+                **failed_lifecycle_patch(),
             }
 
         return await self._merge_evidence_sidecar(state, success_patch)
@@ -887,7 +908,7 @@ class ReportWriter:
         
         if not state.plan or not state.key_findings:
             await emit_error("报告生成所需的数据不足")
-            return {"error": "报告生成所需的数据不足"}
+            return {"error": "报告生成所需的数据不足", **failed_lifecycle_patch()}
         
         await emit_writing_start(len(state.plan.report_outline))
         
@@ -958,8 +979,9 @@ class ReportWriter:
                     "report_sections": report_sections,
                     "final_report": final_report,
                     "report": report,
-                    "current_stage": "complete",
+                    **completed_lifecycle_patch(),
                     "iterations": state.iterations + 1,
+                    "iteration": state.iteration + 1,
                     "llm_calls": state.llm_calls + report_llm_calls,
                     "total_input_tokens": state.total_input_tokens + report_input_tokens,
                     "total_output_tokens": state.total_output_tokens + report_output_tokens,
@@ -979,14 +1001,18 @@ class ReportWriter:
                     await emit_error(f"报告生成失败：{str(e)}")
                     return {
                         "error": f"报告撰写失败：{str(e)}",
-                        "iterations": state.iterations + 1
+                        "iterations": state.iterations + 1,
+                        "iteration": state.iteration + 1,
+                        **failed_lifecycle_patch(),
                     }
                 else:
                     await asyncio.sleep(2 ** attempt)
         
         return {
             "error": "报告生成失败：已超过最大重试次数",
-            "iterations": state.iterations + 1
+            "iterations": state.iterations + 1,
+            "iteration": state.iteration + 1,
+            **failed_lifecycle_patch(),
         }
     
     async def _write_section(

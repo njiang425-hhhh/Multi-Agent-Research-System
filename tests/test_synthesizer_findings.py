@@ -89,6 +89,7 @@ def test_synthesizer_double_writes_findings_without_changing_legacy_patch_fields
     assert [finding.statement for finding in patch["findings"]] == patch["key_findings"]
     assert patch["current_stage"] == "reporting"
     assert patch["iterations"] == state.iterations + 1
+    assert patch["iteration"] == state.iteration + 1
     assert patch["llm_calls"] == state.llm_calls + 1
     assert patch["total_input_tokens"] >= state.total_input_tokens
     assert patch["total_output_tokens"] >= state.total_output_tokens
@@ -109,6 +110,9 @@ def test_synthesizer_error_patch_keeps_existing_behavior_without_findings(monkey
     assert patch == {
         "error": "综合失败：fake synthesis failure",
         "iterations": 1,
+        "iteration": 1,
+        "current_stage": "failed",
+        "status": "failed",
     }
 
 

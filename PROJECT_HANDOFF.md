@@ -2,9 +2,9 @@
 
 > 用途：供下一次 AI 会话直接加载。本文件是项目的唯一交接基线；如历史提交、旧讨论或旧测试记录与本文冲突，以本文和当前源码为准。
 >
-> 最后更新：2026-08-14
+> 最后更新：2026-08-15
 > 分支：`main`
-> 当前提交：`8efaf8a feat: integrate evidence sidecar`（已推送至 `origin/main`）
+> 当前提交：本次提交 `feat: complete runtime lifecycle`（待推送至 `origin/main`）
 > 推荐真实运行组合：DeepSeek + Tavily + `deterministic_v2`
 
 ## 0. 当前事实快照
@@ -13,7 +13,8 @@
 - legacy fields 仍是生产兼容主链：`search_results`、`credibility_scores`、`key_findings`、`report_sections`、`final_report`。Writer 仍只消费 legacy 主链。
 - **P2 COMPLETE：** 六项 ResearchState V1 业务数据迁移均已完成，全部通过显式双写保持 legacy 主链不变。
 - `EVIDENCE_ANALYZER_ENABLED=false` 是默认值。Evidence 是 Synthesizer 内部 protected optional sidecar；关闭时不创建 Evidence 专用 LLM、不运行 Pipeline，行为与 P2.2a 基线等价。
-- 最新 fake-only 全量回归：**183 passed**，另有两个既存 Pydantic deprecation warnings。
+- **P3.1 COMPLETE：** Runtime Identity、基础 lifecycle、Async SQLite checkpoint、resume/adoption、cache replay 已完成；Graph 拓扑与 legacy 业务语义未改。
+- 最新 fake-only 全量回归：**209 passed, 2 warnings**（既存 Pydantic class-based Config deprecation warnings）。
 - Stage 2 最小真实 DeepSeek Evidence 验证 PASS；Stage 3 Planner -> Searcher -> Synthesizer 的真实生产验证 PASS。Writer 完整验证未纳入此轮，原因是独立的串行 DeepSeek 延迟问题。
 
 ## 1. 项目目标与开发原则
@@ -72,7 +73,7 @@ Evidence sidecar 只在 legacy synthesis 成功且 `key_findings` 非空后调�
 | `key_findings -> findings` | P2 已完成 | 先写 compatibility projection；P2.2b 可安全替换为 evidence-backed findings。 |
 | `report_sections/final_report -> report` | P2 已完成 | Writer 继续只消费 legacy 输入，成功 patch 显式写入确定性 Report projection。 |
 | legacy tracking -> `usage` | P2 已完成 | 各成功节点从最终 legacy totals 重建 UsageMetrics；Evidence delta 先合并 legacy totals。 |
-| 运行时生命周期字段 | 留给 P3 | `run_id`、`status`、`iteration`、`agent_trace`、`current_stage lifecycle` 尚未统一启用。 |
+| 运行时生命周期字段 | P3.1 已完成 | `run_id`、`status`、`iteration`、`current_stage` 已统一；`agent_trace` 留给 P3.2。 |
 
 Evidence 最小持久化字段已启用：
 
@@ -184,6 +185,32 @@ model.with_structured_output(
 - legacy tracking -> `usage`：Planner、两种 Searcher、Synthesizer 与 Writer 在成功路径从最终 legacy totals 构造完整 UsageMetrics；Evidence delta 先合并再重建 usage。
 - Legacy checkpoint 兼容政策：允许继续运行，不对历史 V1 字段做自动回填，不新增 hydration adapter。
 
+## 6.1 P3.1 COMPLETE：Runtime Lifecycle
+
+P3.1 在不改变 Graph 拓扑、router 条件语义或 legacy 业务字段的前提下，完成了运行时身份与生命周期闭环。实现集中于 `src/runtime_lifecycle.py`，runner 边界在 `src/graph.py`，Web 入口复用相同的新运行初始化与终态规则。
+
+### Lifecycle invariants
+
+- `run_id` 是每次 fresh Graph run 的独立 UUID；它由 lifecycle helper 创建，绝不与 checkpoint `thread_id` 混用。`thread_id` 只由 persistent runner / Async SQLite checkpointer 拥有。
+- fresh run 以 `current_stage="received"`、`status="pending"` 初始化，开始执行时变为 `planning/running`；正常节点按既有流程推进 stage。Writer 成功写入 `complete/completed`。
+- 所有既有 legacy `iterations` 写点显式同步写 V1 `iteration`，且不重新定义 legacy 计数含义。
+- terminal classification 不改变或伪造 legacy `error`：有 `final_report` 的正常终态为 `complete/completed`；既有 agent failure 保持 `failed/failed`；router 提前结束且无报告时写 `failed/failed`；未捕获异常 best-effort 持久化失败终态后原样重抛。
+- terminal lifecycle patch 在存在 checkpointer 时使用 `aupdate_state()` 持久化，并合并进返回 state；不清除 `snapshot.next`，不改变 LangGraph 调度语义。
+
+### Async SQLite、resume 与 adoption
+
+- persistent runner 使用 `AsyncSqliteSaver` 和 async-compatible context manager；`ainvoke()`、`aget_state()`、`aupdate_state()` 均通过同一 Async SQLite checkpoint 路径工作。
+- P3 checkpoint resume 保留原 `run_id`，不在 resume 边界递增 `iteration` / `iterations`。terminal checkpoint（`snapshot.next == ()`）直接返回，不重新执行 Graph。
+- runnable checkpoint 在恢复前写 `status="running"`；仅在 resume 边界按 `snapshot.next` 映射 stage：`plan -> planning`、`search -> searching`、`synthesize -> synthesizing`、`write_report -> reporting`。未知 node 不猜测。
+- pre-P3 checkpoint 仅在 `run_id` 缺失或为空时最小 adoption：生成 UUID，`iteration` 从 legacy `iterations` 种子化；pending checkpoint 恢复 running/stage，terminal checkpoint 按 `final_report` 分类为 completed 或 failed。不会 hydration `query`、`documents`、`findings`、`report`、`usage` 等业务 V1 字段，也不会新增 legacy `error`。
+- resume 的 `additional_input` 不能覆盖 runtime-owned `run_id`、`status`、`current_stage`、`iteration`。
+
+### Cache replay
+
+- 只有存在 `final_report`、没有 legacy `error` 且不是 failed lifecycle 的完成结果可作为成功 cache。
+- cache hit 是新的 replay run：对 payload deep copy，生成新 UUID `run_id`，写入 `completed/complete` 和 `iteration=0`；保留缓存中的 legacy `iterations` 与业务结果。因此 cache replay 有意允许 `iteration != iterations`。
+- replay 不创建或复用 checkpoint `thread_id`，不执行 Graph 节点。failed、router early termination 或无报告的结果不会作为成功 cache/replay。
+
 ### 历史阶段摘要
 
 P0/P1 已完成基础 State、LLM Factory、Search Runtime、Provider/Tavily/Tool Adapter，以及可独立测试的 Evidence baseline（Document adapter、ResultAnalyzer、Evidence contracts、deterministic aggregator）。这些能力已被 P2.1/P2.2 使用，并已通过 P2.2b protected sidecar 进入 Synthesizer。
@@ -192,9 +219,9 @@ P0/P1 已完成基础 State、LLM Factory、Search Runtime、Provider/Tavily/Too
 
 ### Fake-only 回归
 
-- 最新完整 pytest：**183 passed**。
+- 最新完整 pytest：**209 passed, 2 warnings**。
 - 测试不调用真实 DeepSeek、Tavily 或网页。
-- 一个既存 Pydantic class-based Config deprecation warning 不影响验证结论。
+- 两个既存 Pydantic class-based Config deprecation warnings 不影响验证结论。
 
 ### Stage 2：最小真实 DeepSeek Evidence 验证 — PASS
 
@@ -227,9 +254,10 @@ P0/P1 已完成基础 State、LLM Factory、Search Runtime、Provider/Tavily/Too
 
 | 文件 | 当前职责 |
 |---|---|
-| `src/graph.py` | 固定四节点 LangGraph、条件路由、运行/检查点入口；本阶段未改拓扑。 |
-| `src/state.py` | ResearchState V1、legacy/V1 fields、Evidence 最小 persistence fields 和 `EvidenceDiagnostics`。 |
-| `src/agents.py` | Planner/Searcher/Synthesizer/Writer；Searcher 显式 Documents 双写，Synthesizer protected sidecar 编排。 |
+| `src/runtime_lifecycle.py` | P3.1 runtime identity、fresh/resume/terminal/cache replay lifecycle helpers、runtime-owned input protection。 |
+| `src/graph.py` | 固定四节点 LangGraph、条件路由、运行/Async SQLite checkpoint/resume/cache 入口；本阶段未改拓扑。 |
+| `src/state.py` | ResearchState V1、legacy/V1 fields、P3.1 lifecycle fields、Evidence 最小 persistence fields 和 `EvidenceDiagnostics`。 |
+| `src/agents.py` | Planner/Searcher/Synthesizer/Writer；正常节点 stage 推进、legacy `iterations`/V1 `iteration` 显式双写；Searcher Documents 双写，Synthesizer protected sidecar 编排。 |
 | `src/evidence/adapters.py` | 显式 SearchResult+credibility 到 Document 转换、URL normalization/dedup、稳定 ID。 |
 | `src/evidence/compat.py` | deterministic `key_findings -> Finding[]` compatibility projection。 |
 | `src/evidence/contracts.py` | 独立 persisted `DocumentAnalysis`、`Evidence` contracts。 |
@@ -248,16 +276,18 @@ P0/P1 已完成基础 State、LLM Factory、Search Runtime、Provider/Tavily/Too
 1. **Writer latency：** 已定位为串行 DeepSeek section generation 延迟；与 Evidence 无关。不要为此修改 Graph。后续先做 profiling，再单独设计 timeout、partial report 和可能的 section 化生成策略。
 2. **Evidence partial：** max documents 默认 8；超过上限时 diagnostics 标记 partial，已完成结果仍可用于 aggregation/adoption（受 partial policy 限制）。严格 quote grounding 会拒绝不存在或重复 quote，这是有意的真实性保护。
 3. **P2 V1 契约：** 六项业务数据迁移已完成，但新旧字段不是自动镜像；后续改动仍须显式双写并保持 legacy 行为。
-4. **P3 lifecycle：** `run_id`、`status`、`iteration`、`agent_trace`、`current_stage` 的统一生命周期与 trace/evaluation 尚未设计或启用。
-5. **Provider：** DuckDuckGo 独立 Provider、provider fallback、circuit breaker 尚未完成。
-6. **CI：** fake regression 已有，但尚未建立持续集成。
-7. **环境：** 使用项目 `.venv`。Windows PowerShell 可能显示中文日志乱码；先确认终端编码，不要据此判断源码损坏。
+4. **Checkpoint serialization：** Async SQLite 运行验证通过；交互式 checkpoint probe 仍会看到 Pydantic/msgpack 对未注册模型的 warning。此项不属于 P3.1，后续应单独审查序列化注册与跨版本兼容策略。
+5. **Callbacks / UI：** Web callback 可能在 router early termination 后仍发出完成展示事件；lifecycle state 已正确 failed，但 UI/callback 语义应另行收敛。
+6. **Runner hardening：** lifecycle ownership 已清晰，但调用方重用 persistent `thread_id` 的策略尚未额外限制；可在后续 runner hardening 阶段补充 API guard / 并发策略。
+7. **Provider：** DuckDuckGo 独立 Provider、provider fallback、circuit breaker 尚未完成。
+8. **CI：** fake regression 已有，但尚未建立持续集成。
+9. **环境：** 使用项目 `.venv`。Windows PowerShell 可能显示中文日志乱码；先确认终端编码，不要据此判断源码损坏。
 
 ## 10. 后续路线图
 
-### P3：运行时生命周期 / Agent Trace / Evaluation
+### P3.2：Agent Trace / Evaluation
 
-P2 已关闭。P3 负责设计并启用 `run_id`、`status`、`iteration`、`agent_trace`、`current_stage lifecycle`，以及节点/Tool/LLM trace、latency/token/error 记录和固定离线评测集。不要先增加 Critic Agent、动态路由、Memory、Reflection 或 Supervisor。
+P3.1 已正式关闭。P3.2 负责在既有 Runtime Lifecycle 之上设计节点/Tool/LLM trace、latency/token/error 记录和固定离线评测集。不要重新定义 P3.1 的 `run_id`、`status`、`iteration`、`current_stage` ownership，也不要先增加 Critic Agent、动态路由、Memory、Reflection 或 Supervisor。
 
 ### 远期（独立设计）
 

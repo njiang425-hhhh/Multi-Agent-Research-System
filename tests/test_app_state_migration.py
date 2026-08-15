@@ -34,3 +34,6 @@ def test_web_entry_double_writes_legacy_topic_and_v1_query(monkeypatch) -> None:
     assert graph.initial_state is not None
     assert graph.initial_state.research_topic == "Web migration topic"
     assert graph.initial_state.query == "Web migration topic"
+    assert graph.initial_state.run_id
+    assert graph.initial_state.current_stage == "planning"
+    assert graph.initial_state.status == "running"

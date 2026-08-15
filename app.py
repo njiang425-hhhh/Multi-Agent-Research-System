@@ -7,8 +7,8 @@ from datetime import datetime
 from typing import Optional
 
 from src.config import config
-from src.state import ResearchState
 from src.graph import create_research_graph
+from src.runtime_lifecycle import apply_terminal_lifecycle, create_new_run_state, start_run
 from src.utils.exports import ReportExporter
 from src.utils.history import ResearchHistory
 from src.callbacks import (
@@ -220,9 +220,9 @@ async def run_research_with_updates(topic: str, progress_display: EnhancedProgre
     progress_callback.register_async(on_progress)
     
     try:
-        initial_state = ResearchState(research_topic=topic, query=topic)
+        initial_state = start_run(create_new_run_state(topic))
         graph = create_research_graph()
-        final_state = await graph.ainvoke(initial_state)
+        final_state = apply_terminal_lifecycle(await graph.ainvoke(initial_state))
         
         search_results = final_state.get('search_results', [])
         key_findings = final_state.get('key_findings', [])

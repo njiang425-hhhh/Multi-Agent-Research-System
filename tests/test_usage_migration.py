@@ -254,5 +254,9 @@ def test_writer_double_writes_usage_and_failure_keeps_existing_patch(monkeypatch
     assert patch["llm_calls"] == state.llm_calls + 1
 
     failure_patch = asyncio.run(ReportWriter(llm=object(), max_retries=1).write_report(ResearchState(research_topic="topic")))
-    assert failure_patch == {"error": "报告生成所需的数据不足"}
+    assert failure_patch == {
+        "error": "报告生成所需的数据不足",
+        "current_stage": "failed",
+        "status": "failed",
+    }
     assert "usage" not in failure_patch

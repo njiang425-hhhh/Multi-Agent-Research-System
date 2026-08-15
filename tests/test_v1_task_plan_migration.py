@@ -51,6 +51,7 @@ def test_planner_uses_v1_query_and_explicitly_double_writes_plan() -> None:
     assert "legacy task" not in observed_prompts[0]
     assert patch["plan"] == patch["research_plan"]
     assert patch["plan"].search_queries[0].query == "canonical research task"
+    assert patch["iteration"] == state.iteration + 1
 
 
 class _FakeCredibilityScorer:
@@ -110,6 +111,7 @@ def test_searcher_prefers_v1_plan_without_mutating_legacy_plan() -> None:
     assert v1_plan.search_queries[0].completed is True
     assert legacy_plan.search_queries[0].completed is False
     assert patch["search_results"][0].query == "canonical query"
+    assert patch["iteration"] == state.iteration + 1
 
 
 class _FakeSynthesisAgent:
@@ -153,3 +155,4 @@ def test_synthesizer_uses_v1_query_for_its_existing_legacy_outputs(monkeypatch) 
     assert "canonical research task" in message
     assert "legacy task" not in message
     assert patch["key_findings"] == ["A canonical finding"]
+    assert patch["iteration"] == state.iteration + 1
