@@ -7,6 +7,7 @@
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 from src.evidence.contracts import DocumentAnalysis, Evidence
+from src.agent_trace import AgentTraceEvent
 
 
 class SearchQuery(BaseModel):
@@ -83,23 +84,6 @@ class ResearchPlan(BaseModel):
     objectives: List[str] = Field(description="研究目标")
     search_queries: List[SearchQuery] = Field(description="要执行的搜索查询")
     report_outline: List[str] = Field(description="报告章节大纲")
-
-
-class AgentTraceEvent(BaseModel):
-    """Agent 或工具执行轨迹事件。"""
-
-    event_id: str = Field(default="", description="事件稳定标识")
-    agent_name: str = Field(default="", description="产生事件的 Agent")
-    stage: str = Field(default="", description="事件所属阶段")
-    event_type: str = Field(default="", description="事件类型")
-    status: str = Field(default="completed", description="事件状态")
-    input_refs: List[str] = Field(default_factory=list, description="输入引用")
-    output_refs: List[str] = Field(default_factory=list, description="输出引用")
-    tool_name: Optional[str] = Field(default=None, description="相关工具名称")
-    latency_seconds: Optional[float] = Field(default=None, description="耗时")
-    token_usage: Dict[str, int] = Field(default_factory=dict, description="Token 使用量")
-    error: Optional[str] = Field(default=None, description="事件错误")
-    timestamp: Optional[str] = Field(default=None, description="事件时间")
 
 
 class UsageMetrics(BaseModel):

@@ -533,6 +533,9 @@ class ResearchSearcher:
             "search_calls": execution.stats.search_calls,
             "extract_calls": execution.stats.extract_calls,
             "partial": execution.partial,
+            # Preserve the runtime's per-attempt records for Agent Trace. This
+            # is metadata only; legacy LLM totals remain unchanged.
+            "tool_invocations": execution.stats.invocation_records,
         }
 
         logger.info(

@@ -214,15 +214,39 @@ class SearchExecutor:
                     raise _BudgetExhausted
                 stats.extract_calls += 1
 
+            started = time.perf_counter()
             try:
                 result = tool.ainvoke(payload) if hasattr(tool, "ainvoke") else tool(**payload)
                 if inspect.isawaitable(result):
-                    return await asyncio.wait_for(result, timeout=remaining)
+                    result = await asyncio.wait_for(result, timeout=remaining)
+                stats.invocation_records.append({
+                    "operation": operation,
+                    "attempt": attempt + 1,
+                    "success": True,
+                    "duration": round(time.perf_counter() - started, 6),
+                    "payload": dict(payload),
+                })
                 return result
             except asyncio.TimeoutError:
+                stats.invocation_records.append({
+                    "operation": operation,
+                    "attempt": attempt + 1,
+                    "success": False,
+                    "duration": round(time.perf_counter() - started, 6),
+                    "payload": dict(payload),
+                    "error": "timeout",
+                })
                 raise
             except Exception as exc:
                 last_exception = exc
+                stats.invocation_records.append({
+                    "operation": operation,
+                    "attempt": attempt + 1,
+                    "success": False,
+                    "duration": round(time.perf_counter() - started, 6),
+                    "payload": dict(payload),
+                    "error": str(exc),
+                })
                 if attempt < attempts - 1:
                     if operation == "search":
                         stats.search_retries += 1

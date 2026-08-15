@@ -231,3 +231,31 @@ def test_search_executor_reports_an_error_when_all_searches_fail() -> None:
     assert execution.partial is False
     assert execution.stats.failed_calls == 2
     assert execution.error == "web_search failed: fake search failure"
+
+
+def test_search_executor_records_each_tool_retry_for_trace_projection() -> None:
+    attempts = 0
+
+    def retry_once(query: str, _: int) -> list[dict[str, str]]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("fake retry")
+        return [_result(query, "https://example.com/retry")]
+
+    executor = SearchExecutor(
+        search_config=SearchConfig(
+            mode="deterministic_v2",
+            max_search_times=2,
+            max_extract_times=1,
+            search_retry_times=1,
+        ),
+        search_tool=FakeSearchTool(retry_once),
+        extract_tool=FakeExtractTool(lambda _: "fake content"),
+    )
+
+    execution = asyncio.run(executor.execute(["retry topic"]))
+
+    search_attempts = [item for item in execution.stats.invocation_records if item["operation"] == "search"]
+    assert [item["attempt"] for item in search_attempts] == [1, 2]
+    assert [item["success"] for item in search_attempts] == [False, True]

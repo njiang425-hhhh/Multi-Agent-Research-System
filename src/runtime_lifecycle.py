@@ -155,5 +155,8 @@ def build_cache_replay_state(payload: Mapping[str, Any]) -> dict[str, Any] | Non
         status="completed",
         current_stage="complete",
         iteration=0,
+        # Trace is run-scoped. A cache replay executes no nodes, so retaining
+        # source-run events here would make their trace identity misleading.
+        agent_trace=[],
     )
     return replay

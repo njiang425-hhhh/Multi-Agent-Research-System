@@ -50,6 +50,7 @@ def _eligible_payload() -> dict:
         "error": None,
         "final_report": "# cached report",
         "key_findings": ["cached finding"],
+        "agent_trace": [{"event_id": "cached-trace-event", "trace_id": "cached-run-id"}],
         "nested": {"values": ["original"]},
     }
 
@@ -73,6 +74,7 @@ def test_cache_hit_creates_isolated_replay_runs_without_executing_graph(monkeypa
     assert first["current_stage"] == second["current_stage"] == "complete"
     assert first["iteration"] == second["iteration"] == 0
     assert first["iterations"] == second["iterations"] == 4
+    assert first["agent_trace"] == second["agent_trace"] == []
     assert graph.calls == 0
     assert cache.set_calls == []
 

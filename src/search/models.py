@@ -1,7 +1,7 @@
 """Data models used only during one deterministic search run."""
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from src.state import SearchResult
 
@@ -16,6 +16,9 @@ class SearchExecutionStats:
     extract_retries: int = 0
     failed_calls: int = 0
     elapsed_seconds: float = 0.0
+    # Per-attempt records are observability-only. The counters above remain the
+    # authoritative search runtime tracking.
+    invocation_records: List[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)

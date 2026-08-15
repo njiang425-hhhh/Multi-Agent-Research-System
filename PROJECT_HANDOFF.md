@@ -13,8 +13,8 @@
 - legacy fields 仍是生产兼容主链：`search_results`、`credibility_scores`、`key_findings`、`report_sections`、`final_report`。Writer 仍只消费 legacy 主链。
 - **P2 COMPLETE：** 六项 ResearchState V1 业务数据迁移均已完成，全部通过显式双写保持 legacy 主链不变。
 - `EVIDENCE_ANALYZER_ENABLED=false` 是默认值。Evidence 是 Synthesizer 内部 protected optional sidecar；关闭时不创建 Evidence 专用 LLM、不运行 Pipeline，行为与 P2.2a 基线等价。
-- **P3.1 COMPLETE：** Runtime Identity、基础 lifecycle、Async SQLite checkpoint、resume/adoption、cache replay 已完成；Graph 拓扑与 legacy 业务语义未改。
-- 最新 fake-only 全量回归：**209 passed, 2 warnings**（既存 Pydantic class-based Config deprecation warnings）。
+- **P3 COMPLETE：** P3.1 Runtime Lifecycle、P3.2a append-only Agent Trace 和 P3.2b deterministic Offline Evaluation 均已 closure；Graph 和业务语义未改。
+- 最新 fake-only 全量回归：**218 passed, 2 warnings**（既存 Pydantic class-based Config deprecation warnings）。
 - Stage 2 最小真实 DeepSeek Evidence 验证 PASS；Stage 3 Planner -> Searcher -> Synthesizer 的真实生产验证 PASS。Writer 完整验证未纳入此轮，原因是独立的串行 DeepSeek 延迟问题。
 
 ## 1. 项目目标与开发原则
@@ -73,7 +73,7 @@ Evidence sidecar 只在 legacy synthesis 成功且 `key_findings` 非空后调�
 | `key_findings -> findings` | P2 已完成 | 先写 compatibility projection；P2.2b 可安全替换为 evidence-backed findings。 |
 | `report_sections/final_report -> report` | P2 已完成 | Writer 继续只消费 legacy 输入，成功 patch 显式写入确定性 Report projection。 |
 | legacy tracking -> `usage` | P2 已完成 | 各成功节点从最终 legacy totals 重建 UsageMetrics；Evidence delta 先合并 legacy totals。 |
-| 运行时生命周期字段 | P3.1 已完成 | `run_id`、`status`、`iteration`、`current_stage` 已统一；`agent_trace` 留给 P3.2。 |
+| 运行时生命周期字段 | P3 已完成 | P3.1 的 `run_id`、`status`、`iteration`、`current_stage` ownership 保持不变；`agent_trace` 是独立、append-only 的 observability sidecar；Offline Evaluation 只读其结果。 |
 
 Evidence 最小持久化字段已启用：
 
@@ -219,7 +219,7 @@ P0/P1 已完成基础 State、LLM Factory、Search Runtime、Provider/Tavily/Too
 
 ### Fake-only 回归
 
-- 最新完整 pytest：**209 passed, 2 warnings**。
+- 最新完整 pytest：**218 passed, 2 warnings**。
 - 测试不调用真实 DeepSeek、Tavily 或网页。
 - 两个既存 Pydantic class-based Config deprecation warnings 不影响验证结论。
 
@@ -255,6 +255,8 @@ P0/P1 已完成基础 State、LLM Factory、Search Runtime、Provider/Tavily/Too
 | 文件 | 当前职责 |
 |---|---|
 | `src/runtime_lifecycle.py` | P3.1 runtime identity、fresh/resume/terminal/cache replay lifecycle helpers、runtime-owned input protection。 |
+| `src/agent_trace.py` | P3.2a append-only Agent Trace contract 与 Graph node / LLM / Tool projection orchestration。 |
+| `src/evaluation/` | P3.2b fixed dataset、deterministic evaluation contracts/evaluator 与 injected offline suite runner；不依赖 Graph/Agents。 |
 | `src/graph.py` | 固定四节点 LangGraph、条件路由、运行/Async SQLite checkpoint/resume/cache 入口；本阶段未改拓扑。 |
 | `src/state.py` | ResearchState V1、legacy/V1 fields、P3.1 lifecycle fields、Evidence 最小 persistence fields 和 `EvidenceDiagnostics`。 |
 | `src/agents.py` | Planner/Searcher/Synthesizer/Writer；正常节点 stage 推进、legacy `iterations`/V1 `iteration` 显式双写；Searcher Documents 双写，Synthesizer protected sidecar 编排。 |
@@ -287,7 +289,13 @@ P0/P1 已完成基础 State、LLM Factory、Search Runtime、Provider/Tavily/Too
 
 ### P3.2：Agent Trace / Evaluation
 
-P3.1 已正式关闭。P3.2 负责在既有 Runtime Lifecycle 之上设计节点/Tool/LLM trace、latency/token/error 记录和固定离线评测集。不要重新定义 P3.1 的 `run_id`、`status`、`iteration`、`current_stage` ownership，也不要先增加 Critic Agent、动态路由、Memory、Reflection 或 Supervisor。
+**P3.2a 已关闭：** `src/agent_trace.py` 独立拥有 Trace contract 和 append/merge orchestration。每个 Graph node execution 追加一条带 `trace_id`（即 P3.1 `run_id`）、node/agent/operation/type、attempt、status、起止时间、duration、error 和 metadata 的 Node event；所有历史 event ID 保留，checkpoint resume/retry 只追加新 attempt。`llm_call_details`（含 Evidence Analyzer invocation records）被投影为 LLM trace，不重算或累加 usage/token；deterministic SearchExecutor 的每一次 search/extract/retry 写 runtime invocation record，并投影为 Tool trace。未捕获的节点异常保留原异常，同时由 runner 将失败 Node event 与既有 lifecycle patch 一起 best-effort checkpoint。cache replay 是新 run 且不执行节点，显式清空 source-run trace，避免 `run_id` 混淆。
+
+**P3.2b 已关闭：** `src/evaluation/` 独立提供小型固定 dataset（3 个典型 research query）、纯确定性 `evaluate_run()` 和注入式 `run_offline_evaluation()`。它只读取既有 State/Trace/Usage/Evidence/Findings/Report，输出可 JSON 序列化的 per-run metrics 与 suite aggregate，适合后续跨版本/配置比较。评估 run completion、Trace identity/completeness、Usage integrity、documents/evidence/findings coverage、report structure 和 error/failed trace signals；Evidence disabled/not-run、缺失 usage 或 legacy 缺字段一律明确标记 `unavailable`，不回填 legacy totals、不重算统计。没有 LLM-as-a-judge、参考答案、评分模型或 Graph/Agent integration。
+
+**P3 最终 closure：** 已复核 lifecycle terminalization、Async checkpoint/resume/pre-P3 adoption、cache replay、Node/LLM/Tool Trace append/identity、Trace checkpoint resume/cache isolation、以及 Evaluation 的只读/failed/unavailable 语义。最终补充了真实 Async SQLite trace resume append、cache replay trace 清空与 evaluation outcome 不掩盖子指标 failed 的 fake-only 回归。P3 没有 blocker。
+
+P3 后续扩展应保持 Trace/Evaluation 只做 observability；不要重新定义 P3.1 的 `run_id`、`status`、`iteration`、`current_stage` ownership，也不要先增加 Critic Agent、动态路由、Memory、Reflection 或 Supervisor。
 
 ### 远期（独立设计）
 

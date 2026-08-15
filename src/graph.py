@@ -29,6 +29,7 @@ from src.runtime_lifecycle import (
     start_run,
 )
 from src.agents import ResearchPlanner, ResearchSearcher, ResearchSynthesizer, ReportWriter
+from src.agent_trace import trace_node_execution
 from src.utils.cache import ResearchCache
 from src.config import config
 from src.exceptions import DeepResearchError
@@ -95,10 +96,24 @@ def create_research_graph(checkpointer=None):
     
     workflow = StateGraph(ResearchState)
     
-    workflow.add_node("plan", planner.plan)
-    workflow.add_node("search", searcher.search)
-    workflow.add_node("synthesize", synthesizer.synthesize)
-    workflow.add_node("write_report", writer.write_report)
+    # Agents retain business patches and legacy tracking; this boundary only
+    # appends observability events to checkpointed state.
+    async def plan_node(state: ResearchState) -> Dict[str, Any]:
+        return await trace_node_execution(state, node="plan", agent="ResearchPlanner", operation="plan", execute=planner.plan)
+
+    async def search_node(state: ResearchState) -> Dict[str, Any]:
+        return await trace_node_execution(state, node="search", agent="ResearchSearcher", operation="search", execute=searcher.search)
+
+    async def synthesize_node(state: ResearchState) -> Dict[str, Any]:
+        return await trace_node_execution(state, node="synthesize", agent="ResearchSynthesizer", operation="synthesize", execute=synthesizer.synthesize)
+
+    async def writer_node(state: ResearchState) -> Dict[str, Any]:
+        return await trace_node_execution(state, node="write_report", agent="ReportWriter", operation="write_report", execute=writer.write_report)
+
+    workflow.add_node("plan", plan_node)
+    workflow.add_node("search", search_node)
+    workflow.add_node("synthesize", synthesize_node)
+    workflow.add_node("write_report", writer_node)
     
     workflow.add_edge(START, "plan")
     
@@ -213,9 +228,13 @@ async def _invoke_with_terminal_lifecycle(
     """Invoke a graph and apply terminal runtime lifecycle semantics."""
     try:
         final_state = await graph.ainvoke(initial_state, config=run_config)
-    except Exception:
+    except Exception as exc:
         if has_checkpointer:
-            await _persist_lifecycle_patch(graph, run_config, failed_lifecycle_patch())
+            trace_events = getattr(exc, "_agent_trace_events", None)
+            patch: Dict[str, Any] = failed_lifecycle_patch()
+            if trace_events is not None:
+                patch["agent_trace"] = trace_events
+            await _persist_lifecycle_patch(graph, run_config, patch)
         raise
 
     patch = classify_terminal_lifecycle(final_state)
