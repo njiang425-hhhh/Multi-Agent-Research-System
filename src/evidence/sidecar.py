@@ -13,6 +13,7 @@ from src.evidence.pipeline import EvidencePipeline, EvidencePipelineResult
 from src.evidence.protocols import AnalyzerModel
 from src.config import config as project_config
 from src.llm.factory import get_llm
+from src.runtime_control import ExecutionContext
 from src.state import Document, EvidenceDiagnostics, Finding, SearchResult
 
 
@@ -23,6 +24,7 @@ class PipelineRuntime(Protocol):
         topic: str,
         documents: Sequence[Document],
         objectives: Sequence[str] = (),
+        execution_context: Optional[ExecutionContext] = None,
     ) -> EvidencePipelineResult:
         """Run the standalone evidence runtime."""
 
@@ -39,6 +41,7 @@ class EvidenceSidecarResult(BaseModel):
     input_tokens_delta: int = 0
     output_tokens_delta: int = 0
     llm_call_details: list[dict[str, object]] = Field(default_factory=list)
+    execution_context: Optional[ExecutionContext] = None
 
 
 class EvidenceSidecarService:
@@ -91,6 +94,7 @@ class EvidenceSidecarService:
         documents: Sequence[Document],
         search_results: Sequence[SearchResult] = (),
         objectives: Sequence[str] = (),
+        execution_context: Optional[ExecutionContext] = None,
     ) -> EvidenceSidecarResult:
         """Return isolated sidecar output without updating any ResearchState."""
         effective_documents, source = self._effective_documents(documents, search_results)
@@ -124,11 +128,16 @@ class EvidenceSidecarService:
             ), tracking_start)
 
         try:
-            result = await self._pipeline.run(
+            pipeline_args = dict(
                 topic=topic,
                 documents=effective_documents,
                 objectives=objectives,
             )
+            # Keep P2 fake pipeline compatibility when no runtime context was
+            # supplied (for direct Evidence-only callers and old tests).
+            if execution_context is not None:
+                pipeline_args["execution_context"] = execution_context
+            result = await self._pipeline.run(**pipeline_args)
         except Exception as exc:
             return self._with_tracking(EvidenceSidecarResult(
                 documents=effective_documents,
@@ -146,6 +155,7 @@ class EvidenceSidecarService:
             evidence=result.evidence,
             findings=result.findings,
             diagnostics=diagnostics,
+            execution_context=result.analysis_result.execution_context,
         ), tracking_start)
 
     def _tracking_record_count(self) -> int:

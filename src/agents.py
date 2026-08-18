@@ -30,6 +30,7 @@ from src.config import config
 from src.utils.credibility import CredibilityScorer
 from src.utils.citations import CitationFormatter
 from src.llm_tracker import estimate_tokens
+from src.llm_execution import execute_llm_operation
 from src.exceptions import PlanningError, SearchError, SynthesisError, ReportGenerationError
 from src.search.config import SearchConfig
 from src.search.executor import SearchExecutor
@@ -59,6 +60,7 @@ logger = logging.getLogger(__name__)
 # the other Agents and the shared Graph behavior remain unchanged.
 SEARCHER_AGENT_RECURSION_LIMIT = 12
 SEARCHER_AGENT_TIMEOUT_SECONDS = 90
+LLM_OPERATION_TIMEOUT_SECONDS = 90
 
 
 def _research_query(state: ResearchState) -> str:
@@ -128,6 +130,58 @@ def _legacy_report_to_v1(
     )
 
 
+def _legacy_attempt_limit_to_retries(max_attempts: int) -> int:
+    """Preserve the historical constructor bound while using P4 semantics."""
+    return max(0, max_attempts - 1)
+
+
+def _llm_patch_totals(
+    state: ResearchState,
+    call_details: List[Dict[str, Any]],
+) -> tuple[int, int, int]:
+    """Count every real attempt once; output tokens exist only on success."""
+    calls = len(call_details)
+    input_tokens = sum(int(item.get("input_tokens") or 0) for item in call_details)
+    output_tokens = sum(int(item.get("output_tokens") or 0) for item in call_details)
+    return calls, input_tokens, output_tokens
+
+
+def _llm_failure_patch(
+    state: ResearchState,
+    error: Exception,
+    message: str,
+    *,
+    include_iteration: bool = True,
+) -> Dict[str, Any]:
+    """Create one legacy-compatible failure patch with P4 attempt records."""
+    details = list(getattr(error, "llm_call_details", ()) or ())
+    calls, input_tokens, output_tokens = _llm_patch_totals(state, details)
+    patch: Dict[str, Any] = {
+        "error": message,
+        **({"iterations": state.iterations + 1, "iteration": state.iteration + 1} if include_iteration else {}),
+        **failed_lifecycle_patch(),
+    }
+    if details:
+        patch.update(
+            {
+                "llm_calls": state.llm_calls + calls,
+                "total_input_tokens": state.total_input_tokens + input_tokens,
+                "total_output_tokens": state.total_output_tokens + output_tokens,
+                "llm_call_details": state.llm_call_details + details,
+                "usage": _usage_from_legacy_totals(
+                    state,
+                    llm_calls=state.llm_calls + calls,
+                    total_input_tokens=state.total_input_tokens + input_tokens,
+                    total_output_tokens=state.total_output_tokens + output_tokens,
+                ),
+            }
+        )
+    execution_context = getattr(error, "context", None) or getattr(error, "execution_context", None)
+    if execution_context is not None:
+        patch["execution_context"] = execution_context
+    return patch
+
+
 # =============================================================================
 # 研究规划代理
 # =============================================================================
@@ -159,92 +213,75 @@ class ResearchPlanner:
             ("human", PLANNER_USER_TEMPLATE)
         ])
         
-        for attempt in range(self.max_retries):
-            try:
-                start_time = time.time()
-                chain = prompt | self.llm | JsonOutputParser()
-                
-                input_text = f"{topic} {config.max_search_queries} {config.max_report_sections}"
-                input_tokens = estimate_tokens(input_text)
-                
-                result = await chain.ainvoke({
+        chain = prompt | self.llm | JsonOutputParser()
+        input_text = f"{topic} {config.max_search_queries} {config.max_report_sections}"
+        try:
+            execution = await execute_llm_operation(
+                lambda: chain.ainvoke({
                     "topic": topic,
                     "max_queries": config.max_search_queries,
-                    "max_sections": config.max_report_sections
-                })
-                
-                duration = time.time() - start_time
-                output_tokens = estimate_tokens(str(result))
-                
-                call_detail = {
-                    'agent': 'ResearchPlanner',
-                    'operation': 'plan',
-                    'model': config.model_name,
-                    'input_tokens': input_tokens,
-                    'output_tokens': output_tokens,
-                    'duration': round(duration, 2),
-                    'attempt': attempt + 1
-                }
-                
-                if not all(key in result for key in ["topic", "objectives", "search_queries", "report_outline"]):
-                    raise PlanningError("返回的计划结构无效")
-                
-                if not result["search_queries"]:
-                    raise PlanningError("未生成搜索查询")
-                
-                plan = ResearchPlan(
-                    topic=result["topic"],
-                    objectives=result["objectives"][:5],
-                    search_queries=[
-                        SearchQuery(query=sq["query"], purpose=sq["purpose"])
-                        for sq in result["search_queries"][:config.max_search_queries]
-                    ],
-                    report_outline=result["report_outline"][:config.max_report_sections]
-                )
-                
-                logger.info(f"已创建包含 {len(plan.search_queries)} 个查询的计划（上限：{config.max_search_queries}）")
-                logger.info(f"报告大纲包含 {len(plan.report_outline)} 个章节（上限：{config.max_report_sections}）")
-                
-                await emit_planning_complete(len(plan.search_queries), len(plan.report_outline))
-                
-                return {
-                    "plan": plan,
-                    "research_plan": plan,
-                    "current_stage": "searching",
-                    "iterations": state.iterations + 1,
-                    "iteration": state.iteration + 1,
-                    "llm_calls": state.llm_calls + 1,
-                    "total_input_tokens": state.total_input_tokens + input_tokens,
-                    "total_output_tokens": state.total_output_tokens + output_tokens,
-                    "llm_call_details": state.llm_call_details + [call_detail],
-                    "usage": _usage_from_legacy_totals(
-                        state,
-                        llm_calls=state.llm_calls + 1,
-                        total_input_tokens=state.total_input_tokens + input_tokens,
-                        total_output_tokens=state.total_output_tokens + output_tokens,
-                    ),
-                }
-                
-            except Exception as e:
-                logger.warning(f"第 {attempt + 1} 次规划尝试失败：{str(e)}")
-                if attempt == self.max_retries - 1:
-                    logger.error(f"经过 {self.max_retries} 次尝试后规划仍失败")
-                    await emit_error(f"规划失败：{str(e)}")
-                    return {
-                        "error": f"Planning failed: {str(e)}",
-                        "iterations": state.iterations + 1,
-                        "iteration": state.iteration + 1,
-                        **failed_lifecycle_patch(),
-                    }
-                else:
-                    await asyncio.sleep(2 ** attempt)
-        
-        return {
-            "error": "规划失败：已超过最大重试次数",
+                    "max_sections": config.max_report_sections,
+                }),
+                agent="ResearchPlanner",
+                operation_name="plan",
+                model=config.model_name,
+                input_text=input_text,
+                local_timeout_seconds=LLM_OPERATION_TIMEOUT_SECONDS,
+                # Constructor compatibility: historical ``max_retries`` was
+                # an attempt limit; the shared contract names retries clearly.
+                max_retries=_legacy_attempt_limit_to_retries(self.max_retries),
+                context=state.execution_context,
+            )
+        except Exception as error:
+            logger.error(f"规划调用失败：{error}")
+            await emit_error(f"规划失败：{error}")
+            return _llm_failure_patch(state, error, f"Planning failed: {error}")
+
+        try:
+            result = execution.value
+            if not all(key in result for key in ["topic", "objectives", "search_queries", "report_outline"]):
+                raise PlanningError("返回的计划结构无效")
+            if not result["search_queries"]:
+                raise PlanningError("未生成搜索查询")
+            plan = ResearchPlan(
+                topic=result["topic"],
+                objectives=result["objectives"][:5],
+                search_queries=[
+                    SearchQuery(query=sq["query"], purpose=sq["purpose"])
+                    for sq in result["search_queries"][:config.max_search_queries]
+                ],
+                report_outline=result["report_outline"][:config.max_report_sections],
+            )
+        except Exception as error:
+            setattr(error, "llm_call_details", execution.call_details)
+            setattr(error, "execution_context", execution.context)
+            await emit_error(f"规划失败：{error}")
+            return _llm_failure_patch(state, error, f"Planning failed: {error}")
+
+        calls, input_tokens, output_tokens = _llm_patch_totals(state, execution.call_details)
+        logger.info(f"已创建包含 {len(plan.search_queries)} 个查询的计划（上限：{config.max_search_queries}）")
+        logger.info(f"报告大纲包含 {len(plan.report_outline)} 个章节（上限：{config.max_report_sections}）")
+        await emit_planning_complete(len(plan.search_queries), len(plan.report_outline))
+        patch: Dict[str, Any] = {
+            "plan": plan,
+            "research_plan": plan,
+            "current_stage": "searching",
             "iterations": state.iterations + 1,
             "iteration": state.iteration + 1,
-            **failed_lifecycle_patch(),
+            "llm_calls": state.llm_calls + calls,
+            "total_input_tokens": state.total_input_tokens + input_tokens,
+            "total_output_tokens": state.total_output_tokens + output_tokens,
+            "llm_call_details": state.llm_call_details + execution.call_details,
+            "usage": _usage_from_legacy_totals(
+                state,
+                llm_calls=state.llm_calls + calls,
+                total_input_tokens=state.total_input_tokens + input_tokens,
+                total_output_tokens=state.total_output_tokens + output_tokens,
+            ),
         }
+        if execution.context is not None:
+            patch["execution_context"] = execution.context
+        return patch
 
 
 # =============================================================================
@@ -480,10 +517,14 @@ class ResearchSearcher:
         for i, query in enumerate(plan.search_queries, 1):
             await emit_search_start(query.query, i, total_queries)
 
-        execution = await self.search_executor.execute(
-            plan.search_queries,
+        search_args = dict(
             max_results_per_search=self.search_config.max_results_per_search,
         )
+        # Keep direct legacy executor doubles compatible when there is no P4
+        # runtime context; runner-created states always supply one.
+        if state.execution_context is not None:
+            search_args["execution_context"] = state.execution_context
+        execution = await self.search_executor.execute(plan.search_queries, **search_args)
 
         search_results = execution.search_results
         total_extracted_chars = sum(
@@ -496,7 +537,7 @@ class ResearchSearcher:
         if not search_results:
             error = execution.error or "Deterministic Search Executor 没有返回搜索结果"
             await emit_error(f"搜索失败：{error}")
-            return {
+            failure_patch = {
                 "search_results": [],
                 "credibility_scores": [],
                 "error": f"搜索失败：{error}",
@@ -504,6 +545,9 @@ class ResearchSearcher:
                 "iteration": state.iteration + 1,
                 **failed_lifecycle_patch(),
             }
+            if execution.execution_context is not None:
+                failure_patch["execution_context"] = execution.execution_context
+            return failure_patch
 
         scored_results = self.credibility_scorer.score_search_results(search_results)
         filtered_scored = [
@@ -543,7 +587,7 @@ class ResearchSearcher:
             f"{len(search_results)} 个结果，过滤后剩余 {len(sorted_results)} 个"
         )
 
-        return {
+        result_patch = {
             "search_results": sorted_results,
             "credibility_scores": credibility_scores,
             "documents": documents,
@@ -562,6 +606,11 @@ class ResearchSearcher:
                 total_output_tokens=state.total_output_tokens,
             ),
         }
+        # Agents forward but never interpret or synthesize runtime control
+        # state. Terminal classification remains at the runner boundary.
+        if execution.execution_context is not None:
+            result_patch["execution_context"] = execution.execution_context
+        return result_patch
     
     def _extract_results_from_messages(self, messages: list) -> List[SearchResult]:
         """从代理消息中提取搜索结果。"""
@@ -645,99 +694,60 @@ class ResearchSynthesizer:
             system_prompt=SYNTHESIZER_SYSTEM_PROMPT
         )
         
-        max_results = 20
-        
-        success_patch: Optional[Dict[str, Any]] = None
-        for attempt in range(self.max_retries):
-            try:
-                start_time = time.time()
-                
-                current_max = max(5, max_results - (attempt * 5))
-                
-                results_to_use = state.search_results[:current_max]
-                credibility_scores_to_use = state.credibility_scores[:current_max] if state.credibility_scores else []
-                
-                results_text = self._format_results_text(results_to_use, credibility_scores_to_use)
-                
-                input_message = SYNTHESIZER_USER_TEMPLATE.format(
-                    topic=topic,
-                    results=results_text
-                )
-                
-                input_tokens = estimate_tokens(input_message)
-                
-                result = await agent_graph.ainvoke({
-                    "messages": [{"role": "user", "content": input_message}]
-                })
-                
-                duration = time.time() - start_time
-                
-                messages = result.get('messages', [])
-                output_text = ""
-                if messages:
-                    last_msg = messages[-1]
-                    output_text = str(last_msg.content if hasattr(last_msg, 'content') else str(last_msg))
-                
-                output_tokens = estimate_tokens(output_text)
-                
-                call_detail = {
-                    'agent': 'ResearchSynthesizer',
-                    'operation': 'autonomous_synthesis',
-                    'model': config.summarization_model,
-                    'input_tokens': input_tokens,
-                    'output_tokens': output_tokens,
-                    'duration': round(duration, 2),
-                    'attempt': attempt + 1
-                }
-                
-                key_findings = self._extract_findings(output_text, state.search_results)
-                findings = key_findings_to_findings(key_findings)
-                
-                logger.info(f"已提取 {len(key_findings)} 条关键发现")
-                
-                await emit_synthesis_complete(len(key_findings))
-                
-                success_patch = {
-                    "key_findings": key_findings,
-                    "findings": findings,
-                    "current_stage": "reporting",
-                    "iterations": state.iterations + 1,
-                    "iteration": state.iteration + 1,
-                    "llm_calls": state.llm_calls + 1,
-                    "total_input_tokens": state.total_input_tokens + input_tokens,
-                    "total_output_tokens": state.total_output_tokens + output_tokens,
-                    "llm_call_details": state.llm_call_details + [call_detail],
-                    "usage": _usage_from_legacy_totals(
-                        state,
-                        llm_calls=state.llm_calls + 1,
-                        total_input_tokens=state.total_input_tokens + input_tokens,
-                        total_output_tokens=state.total_output_tokens + output_tokens,
-                    ),
-                }
-                break
-                
-            except Exception as e:
-                logger.warning(f"第 {attempt + 1} 次综合尝试失败：{str(e)}")
-                if attempt == self.max_retries - 1:
-                    logger.error(f"经过 {self.max_retries} 次尝试后综合仍失败")
-                    await emit_error(f"综合失败：{str(e)}")
-                    return {
-                        "error": f"综合失败：{str(e)}",
-                        "iterations": state.iterations + 1,
-                        "iteration": state.iteration + 1,
-                        **failed_lifecycle_patch(),
-                    }
-                else:
-                    await asyncio.sleep(2 ** attempt)
-        
-        if success_patch is None:
-            return {
-                "error": "综合失败：已超过最大重试次数",
-                "iterations": state.iterations + 1,
-                "iteration": state.iteration + 1,
-                **failed_lifecycle_patch(),
-            }
+        results_to_use = state.search_results[:20]
+        credibility_scores_to_use = state.credibility_scores[:20] if state.credibility_scores else []
+        results_text = self._format_results_text(results_to_use, credibility_scores_to_use)
+        input_message = SYNTHESIZER_USER_TEMPLATE.format(topic=topic, results=results_text)
 
+        def output_text(result: dict[str, Any]) -> str:
+            messages = result.get("messages", [])
+            if not messages:
+                return ""
+            last_msg = messages[-1]
+            return str(last_msg.content if hasattr(last_msg, "content") else last_msg)
+
+        try:
+            execution = await execute_llm_operation(
+                lambda: agent_graph.ainvoke({"messages": [{"role": "user", "content": input_message}]}),
+                agent="ResearchSynthesizer",
+                operation_name="autonomous_synthesis",
+                model=config.summarization_model,
+                input_text=input_message,
+                local_timeout_seconds=LLM_OPERATION_TIMEOUT_SECONDS,
+                max_retries=_legacy_attempt_limit_to_retries(self.max_retries),
+                context=state.execution_context,
+                output_text=output_text,
+            )
+        except Exception as error:
+            logger.error(f"综合调用失败：{error}")
+            await emit_error(f"综合失败：{error}")
+            return _llm_failure_patch(state, error, f"综合失败：{error}")
+
+        text = output_text(execution.value)
+        key_findings = self._extract_findings(text, state.search_results)
+        findings = key_findings_to_findings(key_findings)
+        calls, input_tokens, output_tokens = _llm_patch_totals(state, execution.call_details)
+        logger.info(f"已提取 {len(key_findings)} 条关键发现")
+        await emit_synthesis_complete(len(key_findings))
+        success_patch: Dict[str, Any] = {
+            "key_findings": key_findings,
+            "findings": findings,
+            "current_stage": "reporting",
+            "iterations": state.iterations + 1,
+            "iteration": state.iteration + 1,
+            "llm_calls": state.llm_calls + calls,
+            "total_input_tokens": state.total_input_tokens + input_tokens,
+            "total_output_tokens": state.total_output_tokens + output_tokens,
+            "llm_call_details": state.llm_call_details + execution.call_details,
+            "usage": _usage_from_legacy_totals(
+                state,
+                llm_calls=state.llm_calls + calls,
+                total_input_tokens=state.total_input_tokens + input_tokens,
+                total_output_tokens=state.total_output_tokens + output_tokens,
+            ),
+        }
+        if execution.context is not None:
+            success_patch["execution_context"] = execution.context
         return await self._merge_evidence_sidecar(state, success_patch)
 
     async def _merge_evidence_sidecar(
@@ -763,12 +773,16 @@ class ResearchSynthesizer:
 
         try:
             sidecar = self.sidecar_factory()
-            sidecar_result = await sidecar.run(
+            sidecar_args = dict(
                 topic=_research_query(state),
                 documents=state.documents,
                 search_results=state.search_results,
                 objectives=plan.objectives if plan else (),
             )
+            execution_context = success_patch.get("execution_context") or state.execution_context
+            if execution_context is not None:
+                sidecar_args["execution_context"] = execution_context
+            sidecar_result = await sidecar.run(**sidecar_args)
         except Exception as exc:
             success_patch["evidence_diagnostics"] = EvidenceDiagnostics(
                 status="failed",
@@ -780,6 +794,8 @@ class ResearchSynthesizer:
         success_patch["document_analyses"] = sidecar_result.document_analyses
         success_patch["evidence"] = sidecar_result.evidence
         success_patch["evidence_diagnostics"] = sidecar_result.diagnostics
+        if sidecar_result.execution_context is not None:
+            success_patch["execution_context"] = sidecar_result.execution_context
         if sidecar_result.diagnostics.source == "legacy_search_results_backfill":
             success_patch["documents"] = sidecar_result.documents
         if self._can_adopt_evidence_findings(sidecar_result):
@@ -915,117 +931,106 @@ class ReportWriter:
         
         await emit_writing_start(len(state.plan.report_outline))
         
-        report_llm_calls = 0
-        report_input_tokens = 0
-        report_output_tokens = 0
-        report_call_details = []
-        
-        for attempt in range(self.max_retries):
-            try:
-                report_sections = []
-                total_sections = len(state.plan.report_outline)
-                
-                for section_idx, section_title in enumerate(state.plan.report_outline, 1):
-                    await emit_writing_section(section_title, section_idx, total_sections)
-                    
-                    section, section_tokens = await self._write_section(
-                        state.research_topic,
-                        section_title,
-                        state.key_findings,
-                        state.search_results
-                    )
-                    if section:
-                        report_sections.append(section)
-                        if section_tokens:
-                            report_llm_calls += 1
-                            report_input_tokens += section_tokens['input_tokens']
-                            report_output_tokens += section_tokens['output_tokens']
-                            report_call_details.append(section_tokens)
-                
-                if not report_sections:
-                    raise ReportGenerationError("未生成报告章节")
-                
-                temp_state = ResearchState(
-                    research_topic=state.research_topic,
-                    plan=state.plan,
-                    report_sections=report_sections,
-                    search_results=state.search_results
-                )
-                
-                final_report = self._compile_report(temp_state)
-                
-                if state.search_results:
-                    final_report = self.citation_formatter.update_report_citations(
-                        final_report,
-                        style=self.citation_style,
-                        search_results=state.search_results
-                    )
-                
-                if state.credibility_scores:
-                    high_cred_sources = [
-                        i+1 for i, score in enumerate(state.credibility_scores)
-                        if score.get('level') == 'high'
-                    ]
-                    if high_cred_sources:
-                        final_report += f"\n\n---\n\n**注：** 本次研究优先采用了 {len(high_cred_sources)} 个高可信度来源。"
-                
-                if len(final_report) < 500:
-                    raise ReportGenerationError("报告过短，内容不足")
-                
-                logger.info(f"报告生成完成：{len(final_report)} 个字符")
-                
-                await emit_writing_complete(len(final_report))
+        report_sections: list[ReportSection] = []
+        report_call_details: list[dict[str, Any]] = []
+        current_context = state.execution_context
+        total_sections = len(state.plan.report_outline)
 
-                report = _legacy_report_to_v1(state, report_sections, final_report)
-                
-                return {
-                    "report_sections": report_sections,
-                    "final_report": final_report,
-                    "report": report,
-                    **completed_lifecycle_patch(),
-                    "iterations": state.iterations + 1,
-                    "iteration": state.iteration + 1,
-                    "llm_calls": state.llm_calls + report_llm_calls,
-                    "total_input_tokens": state.total_input_tokens + report_input_tokens,
-                    "total_output_tokens": state.total_output_tokens + report_output_tokens,
-                    "llm_call_details": state.llm_call_details + report_call_details,
-                    "usage": _usage_from_legacy_totals(
-                        state,
-                        llm_calls=state.llm_calls + report_llm_calls,
-                        total_input_tokens=state.total_input_tokens + report_input_tokens,
-                        total_output_tokens=state.total_output_tokens + report_output_tokens,
-                    ),
-                }
-                
-            except Exception as e:
-                logger.warning(f"第 {attempt + 1} 次报告尝试失败：{str(e)}")
-                if attempt == self.max_retries - 1:
-                    logger.error(f"经过 {self.max_retries} 次尝试后报告生成仍失败")
-                    await emit_error(f"报告生成失败：{str(e)}")
-                    return {
-                        "error": f"报告撰写失败：{str(e)}",
-                        "iterations": state.iterations + 1,
-                        "iteration": state.iteration + 1,
-                        **failed_lifecycle_patch(),
-                    }
+        try:
+            for section_idx, section_title in enumerate(state.plan.report_outline, 1):
+                await emit_writing_section(section_title, section_idx, total_sections)
+                section_args = (
+                    state.research_topic,
+                    section_title,
+                    state.key_findings,
+                    state.search_results,
+                )
+                section_kwargs: dict[str, Any] = {}
+                if current_context is not None:
+                    section_kwargs["execution_context"] = current_context
+                written = await self._write_section(*section_args, **section_kwargs)
+                # Existing tests and external injection seams return the old
+                # two-tuple. The production implementation returns context.
+                if len(written) == 3:
+                    section, section_details, current_context = written
                 else:
-                    await asyncio.sleep(2 ** attempt)
-        
-        return {
-            "error": "报告生成失败：已超过最大重试次数",
+                    section, legacy_detail = written
+                    section_details = [legacy_detail] if isinstance(legacy_detail, dict) else []
+                if section:
+                    report_sections.append(section)
+                report_call_details.extend(section_details)
+
+            if not report_sections:
+                raise ReportGenerationError("未生成报告章节")
+
+            temp_state = ResearchState(
+                research_topic=state.research_topic,
+                plan=state.plan,
+                report_sections=report_sections,
+                search_results=state.search_results,
+            )
+            final_report = self._compile_report(temp_state)
+            if state.search_results:
+                final_report = self.citation_formatter.update_report_citations(
+                    final_report,
+                    style=self.citation_style,
+                    search_results=state.search_results,
+                )
+            if state.credibility_scores:
+                high_cred_sources = [
+                    i + 1 for i, score in enumerate(state.credibility_scores)
+                    if score.get("level") == "high"
+                ]
+                if high_cred_sources:
+                    final_report += f"\n\n---\n\n**注：** 本次研究优先采用了 {len(high_cred_sources)} 个高可信度来源。"
+            if len(final_report) < 500:
+                raise ReportGenerationError("报告过短，内容不足")
+        except Exception as error:
+            # Preserve successful earlier section attempts, then append the
+            # failing operation's attempts exactly once.
+            details = report_call_details + list(getattr(error, "llm_call_details", ()) or ())
+            setattr(error, "llm_call_details", details)
+            if getattr(error, "context", None) is None and current_context is not None:
+                setattr(error, "execution_context", current_context)
+            logger.error(f"报告生成失败：{error}")
+            await emit_error(f"报告生成失败：{error}")
+            return _llm_failure_patch(state, error, f"报告撰写失败：{error}")
+
+        calls, input_tokens, output_tokens = _llm_patch_totals(state, report_call_details)
+        logger.info(f"报告生成完成：{len(final_report)} 个字符")
+        await emit_writing_complete(len(final_report))
+        report = _legacy_report_to_v1(state, report_sections, final_report)
+        patch: Dict[str, Any] = {
+            "report_sections": report_sections,
+            "final_report": final_report,
+            "report": report,
+            **completed_lifecycle_patch(),
             "iterations": state.iterations + 1,
             "iteration": state.iteration + 1,
-            **failed_lifecycle_patch(),
+            "llm_calls": state.llm_calls + calls,
+            "total_input_tokens": state.total_input_tokens + input_tokens,
+            "total_output_tokens": state.total_output_tokens + output_tokens,
+            "llm_call_details": state.llm_call_details + report_call_details,
+            "usage": _usage_from_legacy_totals(
+                state,
+                llm_calls=state.llm_calls + calls,
+                total_input_tokens=state.total_input_tokens + input_tokens,
+                total_output_tokens=state.total_output_tokens + output_tokens,
+            ),
         }
+        if current_context is not None:
+            patch["execution_context"] = current_context
+        return patch
     
     async def _write_section(
         self,
         topic: str,
         section_title: str,
         findings: List[str],
-        search_results: List
+        search_results: List,
+        execution_context=None,
     ) -> tuple:
-        """撰写单个报告章节。"""
+        """Write one section; runtime owns retries, budget, and deadline."""
         logger.info(f"正在撰写章节：{section_title}")
         
         system_prompt = WRITER_SYSTEM_PROMPT.format(min_words=config.min_section_words)
@@ -1035,72 +1040,53 @@ class ReportWriter:
             ("human", "{input}")
         ])
         
-        try:
-            start_time = time.time()
-            
-            sources_context = ""
-            if search_results:
-                sources_context = "\n可用于引用的来源：\n" + "\n".join(
-                    f"[{i+1}] {r.title} ({r.url})"
-                    for i, r in enumerate(search_results[:15])
-                )
-            
-            input_message = WRITER_USER_TEMPLATE.format(
-                topic=topic,
-                section_title=section_title,
-                min_words=config.min_section_words,
-                findings=chr(10).join(f"- {f}" for f in findings),
-                sources_context=sources_context
+        sources_context = ""
+        if search_results:
+            sources_context = "\n可用于引用的来源：\n" + "\n".join(
+                f"[{i+1}] {r.title} ({r.url})"
+                for i, r in enumerate(search_results[:15])
             )
-            
-            input_tokens = estimate_tokens(input_message)
-            
-            chain = prompt | self.llm | StrOutputParser()
-            content = await chain.ainvoke({"input": input_message})
-            
-            if not isinstance(content, str):
-                content = str(content)
-            
-            duration = time.time() - start_time
-            output_tokens = estimate_tokens(content)
-            
-            call_detail = {
-                'agent': 'ReportWriter',
-                'operation': f'write_section_{section_title[:30]}',
-                'model': config.model_name,
-                'input_tokens': input_tokens,
-                'output_tokens': output_tokens,
-                'duration': round(duration, 2)
-            }
-            
-            if not content or len(content.strip()) < 50:
-                logger.warning(f"章节“{section_title}”生成的内容不足：{len(content)} 个字符")
-                if findings:
-                    logger.info(f"正在为章节“{section_title}”创建备用内容")
-                    content = f"\n\n{chr(10).join(findings[:3])}\n\n"
-                else:
-                    logger.error(f"无法创建章节“{section_title}”：没有内容和研究发现")
-                    return None, None
-            
-            citations = re.findall(r'\[(\d+)\]', content)
-            source_urls = []
-            for cite_num in set(citations):
-                idx = int(cite_num) - 1
-                if 0 <= idx < len(search_results):
-                    source_urls.append(search_results[idx].url)
-            
-            section = ReportSection(
-                title=section_title,
-                content=content,
-                sources=source_urls
-            )
-            
-            logger.info(f"章节“{section_title}”撰写成功：{len(content)} 个字符")
-            return section, call_detail
-            
-        except Exception as e:
-            logger.error(f"撰写章节“{section_title}”出错：{str(e)}")
-            return None, None
+        input_message = WRITER_USER_TEMPLATE.format(
+            topic=topic,
+            section_title=section_title,
+            min_words=config.min_section_words,
+            findings=chr(10).join(f"- {f}" for f in findings),
+            sources_context=sources_context,
+        )
+        chain = prompt | self.llm | StrOutputParser()
+        execution = await execute_llm_operation(
+            lambda: chain.ainvoke({"input": input_message}),
+            agent="ReportWriter",
+            operation_name=f"write_section_{section_title[:30]}",
+            model=config.model_name,
+            input_text=input_message,
+            local_timeout_seconds=LLM_OPERATION_TIMEOUT_SECONDS,
+            max_retries=_legacy_attempt_limit_to_retries(self.max_retries),
+            context=execution_context,
+        )
+        content = execution.value if isinstance(execution.value, str) else str(execution.value)
+        if not content or len(content.strip()) < 50:
+            logger.warning(f"章节“{section_title}”生成的内容不足：{len(content)} 个字符")
+            if findings:
+                logger.info(f"正在为章节“{section_title}”创建备用内容")
+                content = f"\n\n{chr(10).join(findings[:3])}\n\n"
+            else:
+                logger.error(f"无法创建章节“{section_title}”：没有内容和研究发现")
+                return None, execution.call_details, execution.context
+
+        citations = re.findall(r'\[(\d+)\]', content)
+        source_urls = []
+        for cite_num in set(citations):
+            idx = int(cite_num) - 1
+            if 0 <= idx < len(search_results):
+                source_urls.append(search_results[idx].url)
+        section = ReportSection(
+            title=section_title,
+            content=content,
+            sources=source_urls,
+        )
+        logger.info(f"章节“{section_title}”撰写成功：{len(content)} 个字符")
+        return section, execution.call_details, execution.context
     
     def _compile_report(self, state: ResearchState) -> str:
         """将所有章节汇编为最终报告。"""

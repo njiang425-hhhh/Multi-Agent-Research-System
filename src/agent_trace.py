@@ -15,8 +15,22 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
-TraceType = Literal["node", "llm", "tool"]
+TraceType = Literal["node", "llm", "tool", "retention"]
 TraceStatus = Literal["completed", "failed"]
+_REDACTED = "[REDACTED]"
+_SENSITIVE_METADATA_KEYS = frozenset(
+    {"api_key", "authorization", "cookie", "headers", "password", "payload", "secret", "token"}
+)
+
+
+class TraceRetentionPolicy(BaseModel):
+    """Bounded checkpoint trace policy, independent of usage accounting."""
+
+    max_events: int = Field(default=200, ge=8)
+    max_metadata_string_chars: int = Field(default=2048, ge=32)
+
+
+DEFAULT_TRACE_RETENTION_POLICY = TraceRetentionPolicy()
 
 
 class AgentTraceEvent(BaseModel):
@@ -53,9 +67,130 @@ class AgentTraceEvent(BaseModel):
     timestamp: str | None = None
 
 
+def _sanitize_metadata(value: Any, policy: TraceRetentionPolicy, *, key: str = "") -> Any:
+    """Remove sensitive payload values while retaining operational shape."""
+
+    if key.lower() in _SENSITIVE_METADATA_KEYS:
+        return _REDACTED
+    if isinstance(value, Mapping):
+        return {
+            str(item_key): _sanitize_metadata(item_value, policy, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_metadata(item, policy) for item in value]
+    if isinstance(value, str) and len(value) > policy.max_metadata_string_chars:
+        return value[: policy.max_metadata_string_chars] + "…[TRUNCATED]"
+    return value
+
+
+def redact_trace_event(event: AgentTraceEvent, policy: TraceRetentionPolicy) -> AgentTraceEvent:
+    """Return a metadata-sanitized copy without changing trace identity."""
+
+    return event.model_copy(update={"metadata": _sanitize_metadata(event.metadata, policy)})
+
+
+def _signature(event: AgentTraceEvent) -> str:
+    return "\x1f".join((event.node, event.event_type, event.operation))
+
+
+def _retention_offsets(events: Sequence[AgentTraceEvent]) -> dict[str, int]:
+    offsets: dict[str, int] = {}
+    for event in events:
+        offsets[_signature(event)] = max(offsets.get(_signature(event), 0), event.attempt)
+        if event.event_type != "retention":
+            continue
+        raw_offsets = event.metadata.get("attempt_offsets")
+        if not isinstance(raw_offsets, Mapping):
+            continue
+        for signature, attempt in raw_offsets.items():
+            if isinstance(attempt, int) and attempt > 0:
+                offsets[str(signature)] = max(offsets.get(str(signature), 0), attempt)
+    return offsets
+
+
+def _retention_marker(
+    dropped: Sequence[AgentTraceEvent],
+    offsets: Mapping[str, int],
+    prior_marker: AgentTraceEvent | None = None,
+) -> AgentTraceEvent:
+    reference = prior_marker or (dropped[-1] if dropped else None)
+    now = _iso_now()
+    prior_dropped = (
+        int(prior_marker.metadata.get("dropped_event_count") or 0)
+        if prior_marker is not None
+        else 0
+    )
+    metadata = {
+        "dropped_event_count": prior_dropped + len(dropped),
+        "attempt_offsets": dict(offsets),
+    }
+    if prior_marker is not None:
+        return prior_marker.model_copy(update={"ended_at": now.isoformat(), "metadata": metadata})
+    return AgentTraceEvent(
+        trace_id=reference.trace_id if reference else "",
+        node="trace_retention",
+        agent="Runtime",
+        operation="compact_trace",
+        event_type="retention",
+        attempt=1,
+        status="completed",
+        started_at=reference.started_at if reference and reference.started_at else now.isoformat(),
+        ended_at=now.isoformat(),
+        metadata=metadata,
+    )
+
+
+def retain_trace_events(
+    events: Sequence[AgentTraceEvent],
+    policy: TraceRetentionPolicy,
+) -> list[AgentTraceEvent]:
+    """Bound a checkpoint trace while preserving future retry attempt identity.
+
+    A compacted marker records maximum attempts for discarded signatures. The
+    latest node observation per node is retained first so completed-run trace
+    evaluation continues to observe Graph V1 node coverage. Usage never reads
+    Agent Trace, therefore compaction cannot alter usage totals.
+    """
+
+    sanitized = [redact_trace_event(event, policy) for event in events]
+    ordinary = [event for event in sanitized if event.event_type != "retention"]
+    prior_markers = [event for event in sanitized if event.event_type == "retention"]
+    if len(sanitized) <= policy.max_events:
+        return sanitized
+
+    offsets = _retention_offsets(sanitized)
+    node_latest: list[AgentTraceEvent] = []
+    seen_nodes: set[str] = set()
+    for event in reversed(ordinary):
+        if event.event_type == "node" and event.node not in seen_nodes:
+            node_latest.append(event)
+            seen_nodes.add(event.node)
+    node_latest.reverse()
+    retained_ids = {event.event_id for event in node_latest}
+    capacity = max(0, policy.max_events - len(node_latest) - 1)
+    tail: list[AgentTraceEvent] = []
+    for event in reversed(ordinary):
+        if event.event_id in retained_ids:
+            continue
+        if len(tail) >= capacity:
+            break
+        tail.append(event)
+        retained_ids.add(event.event_id)
+    tail.reverse()
+    retained = [*node_latest, *tail]
+    dropped = [event for event in ordinary if event.event_id not in retained_ids]
+    # Existing markers are merged into this one so repeated resume/retention
+    # stays bounded too.
+    marker = _retention_marker(dropped, offsets, prior_markers[0] if prior_markers else None)
+    return [marker, *retained]
+
+
 def append_trace_events(
     existing: Sequence[AgentTraceEvent | Mapping[str, Any]] | None,
     additions: Sequence[AgentTraceEvent],
+    *,
+    retention_policy: TraceRetentionPolicy = DEFAULT_TRACE_RETENTION_POLICY,
 ) -> list[AgentTraceEvent]:
     """Append events without replacing checkpoint history.
 
@@ -72,14 +207,12 @@ def append_trace_events(
         if event.event_id not in known_ids:
             merged.append(event)
             known_ids.add(event.event_id)
-    return merged
+    return retain_trace_events(merged, retention_policy)
 
 
 def _attempt(existing: Sequence[AgentTraceEvent], *, node: str, event_type: TraceType, operation: str) -> int:
-    return 1 + sum(
-        event.node == node and event.event_type == event_type and event.operation == operation
-        for event in existing
-    )
+    signature = "\x1f".join((node, event_type, operation))
+    return 1 + _retention_offsets(existing).get(signature, 0)
 
 
 def _iso_now() -> datetime:
@@ -113,7 +246,7 @@ def _base_event(
         ended_at=ended.isoformat(),
         duration_seconds=round(duration, 6),
         error=error,
-        metadata=dict(metadata or {}),
+        metadata=_sanitize_metadata(dict(metadata or {}), DEFAULT_TRACE_RETENTION_POLICY),
         # Keep older readers useful without asking them to understand the new API.
         agent_name=agent,
         stage=node,

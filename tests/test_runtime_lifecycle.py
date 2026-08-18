@@ -5,11 +5,13 @@ from uuid import UUID
 
 from src import graph as graph_module
 from src.runtime_lifecycle import (
+    classify_terminal_lifecycle,
     completed_lifecycle_patch,
     create_new_run_state,
     failed_lifecycle_patch,
     start_run,
 )
+from src.runtime_control import RunPolicy, create_execution_context
 
 
 def test_new_run_has_an_independent_uuid_and_pending_received_state() -> None:
@@ -41,6 +43,22 @@ def test_runtime_terminal_patches_are_owned_separately_from_error_text() -> None
     assert completed_lifecycle_patch() == {"current_stage": "complete", "status": "completed"}
 
 
+def test_runtime_classifies_exhausted_operation_budget_without_changing_error_semantics() -> None:
+    context = create_execution_context(
+        run_id="terminal-budget",
+        thread_id="terminal-budget-thread",
+        policy=RunPolicy(max_operation_calls=0),
+    ).stopped("budget_exhausted")
+
+    patch = classify_terminal_lifecycle({"execution_context": context})
+
+    assert patch == {
+        "current_stage": "failed",
+        "status": "failed",
+        "terminal_reason": "budget_exhausted",
+    }
+
+
 class _FakeGraph:
     def __init__(self) -> None:
         self.initial_state = None
@@ -67,6 +85,7 @@ def test_graph_runner_keeps_thread_id_separate_from_new_run_id(monkeypatch) -> N
             use_cache=False,
             verbose=False,
             thread_id="checkpoint-thread-123",
+            run_policy=RunPolicy(total_timeout_seconds=60),
         )
     )
 
@@ -74,11 +93,20 @@ def test_graph_runner_keeps_thread_id_separate_from_new_run_id(monkeypatch) -> N
         "final_report": "fake report",
         "current_stage": "complete",
         "status": "completed",
+        "terminal_reason": "completed",
     }
-    assert fake_graph.lifecycle_patches == [{"current_stage": "complete", "status": "completed"}]
+    assert fake_graph.lifecycle_patches == [
+        {
+            "current_stage": "complete",
+            "status": "completed",
+            "terminal_reason": "completed",
+        }
+    ]
     assert fake_graph.initial_state is not None
     assert fake_graph.initial_state.run_id != "checkpoint-thread-123"
     assert UUID(fake_graph.initial_state.run_id).version == 4
+    assert fake_graph.initial_state.execution_context is not None
+    assert fake_graph.initial_state.execution_context.policy.total_timeout_seconds == 60
     assert fake_graph.initial_state.current_stage == "planning"
     assert fake_graph.initial_state.status == "running"
     assert fake_graph.config == {"configurable": {"thread_id": "checkpoint-thread-123"}}

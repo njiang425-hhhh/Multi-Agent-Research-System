@@ -1,6 +1,7 @@
 """Search provider contracts and factory infrastructure."""
 
 from src.search.providers.base import SearchProvider
+from src.search.providers.duckduckgo import DuckDuckGoProvider
 from src.search.providers.errors import (
     AuthError,
     CircuitOpenError,
@@ -15,6 +16,7 @@ from src.search.providers.models import ProviderSearchResult
 __all__ = [
     "AuthError",
     "CircuitOpenError",
+    "DuckDuckGoProvider",
     "ProviderSearchResult",
     "RateLimitError",
     "SearchProvider",

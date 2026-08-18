@@ -1,16 +1,23 @@
 """Deterministic search executor.
 
-The executor owns tool calls, budgets, retries, de-duplication and deadlines.
-An LLM may later analyze its output, but it does not control this loop.
+The service owns local tool-call limits, retries, de-duplication and its
+deadline. Runtime policy can further restrict every external operation.
 """
 
 import asyncio
-import inspect
 import json
 import time
 from typing import Any, Iterable, Optional, Sequence, Union
 from urllib.parse import urldefrag, urlsplit, urlunsplit
 
+from src.execution_policy import (
+    OperationAttempt,
+    OperationBudgetExhausted,
+    OperationDeadlineExceeded,
+    OperationExecutionPolicy,
+    execute_operation,
+)
+from src.runtime_control import ExecutionContext
 from src.search.config import SearchConfig
 from src.search.models import SearchExecutionResult, SearchExecutionStats
 from src.state import SearchQuery, SearchResult
@@ -42,6 +49,7 @@ class SearchExecutor:
         self,
         queries: Sequence[QueryInput],
         max_results_per_search: Optional[int] = None,
+        execution_context: Optional[ExecutionContext] = None,
     ) -> SearchExecutionResult:
         """Run bounded searches followed by bounded content extraction."""
 
@@ -52,6 +60,8 @@ class SearchExecutor:
         started = time.perf_counter()
         last_error: Optional[str] = None
         timed_out = False
+        global_budget_exhausted = False
+        current_context = execution_context
 
         search_limit = self.search_config.max_search_times
         result_limit = (
@@ -68,6 +78,7 @@ class SearchExecutor:
                 False,
                 stats,
                 started,
+                current_context,
             )
 
         try:
@@ -91,14 +102,20 @@ class SearchExecutor:
                         deadline,
                         stats,
                         operation="search",
+                        execution_context=current_context,
                     )
+                    payload, current_context = payload
                 except _BudgetExhausted:
                     break
-                except asyncio.TimeoutError:
+                except OperationBudgetExhausted as exc:
+                    current_context = exc.context or current_context
+                    global_budget_exhausted = True
+                    break
+                except (OperationDeadlineExceeded, asyncio.TimeoutError) as exc:
+                    current_context = getattr(exc, "context", None) or current_context
                     timed_out = True
                     break
                 except Exception as exc:
-                    stats.failed_calls += 1
                     last_error = f"web_search failed: {exc}"
                     continue
 
@@ -120,21 +137,26 @@ class SearchExecutor:
                         break
 
                     try:
-                        content = await self._invoke_with_retries(
+                        content, current_context = await self._invoke_with_retries(
                             self.extract_tool,
                             {"url": result.url},
                             self.search_config.extract_retry_times,
                             deadline,
                             stats,
                             operation="extract",
+                            execution_context=current_context,
                         )
                     except _BudgetExhausted:
                         break
-                    except asyncio.TimeoutError:
+                    except OperationBudgetExhausted as exc:
+                        current_context = exc.context or current_context
+                        global_budget_exhausted = True
+                        break
+                    except (OperationDeadlineExceeded, asyncio.TimeoutError) as exc:
+                        current_context = getattr(exc, "context", None) or current_context
                         timed_out = True
                         break
                     except Exception:
-                        stats.failed_calls += 1
                         continue
 
                     if isinstance(content, str) and content.strip():
@@ -158,6 +180,7 @@ class SearchExecutor:
                     False,
                     stats,
                     started,
+                    current_context,
                 )
             return self._finish(
                 results,
@@ -166,6 +189,29 @@ class SearchExecutor:
                 True,
                 stats,
                 started,
+                current_context,
+            )
+
+        if global_budget_exhausted:
+            budget_message = "Run operation budget exhausted"
+            if not results or not self.search_config.allow_partial_results:
+                return self._finish(
+                    results,
+                    budget_message,
+                    False,
+                    False,
+                    stats,
+                    started,
+                    current_context,
+                )
+            return self._finish(
+                results,
+                None,
+                False,
+                True,
+                stats,
+                started,
+                current_context,
             )
 
         if not results:
@@ -176,6 +222,7 @@ class SearchExecutor:
                 False,
                 stats,
                 started,
+                current_context,
             )
 
         extraction_limited = len(results) > self.search_config.max_extract_times
@@ -186,6 +233,7 @@ class SearchExecutor:
             extraction_limited,
             stats,
             started,
+            current_context,
         )
 
     async def _invoke_with_retries(
@@ -196,66 +244,67 @@ class SearchExecutor:
         deadline: float,
         stats: SearchExecutionStats,
         operation: str,
-    ) -> Any:
-        attempts = retry_times + 1
-        last_exception: Optional[Exception] = None
+        execution_context: Optional[ExecutionContext],
+    ) -> tuple[Any, Optional[ExecutionContext]]:
+        local_limit = (
+            self.search_config.max_search_times
+            if operation == "search"
+            else self.search_config.max_extract_times
+        )
+        calls_so_far = stats.search_calls if operation == "search" else stats.extract_calls
+        local_remaining = local_limit - calls_so_far
+        if local_remaining <= 0:
+            raise _BudgetExhausted
 
-        for attempt in range(attempts):
-            remaining = deadline - time.perf_counter()
-            if remaining <= 0:
-                raise asyncio.TimeoutError
+        policy = OperationExecutionPolicy(
+            max_retries=min(retry_times, local_remaining - 1),
+            # Existing SearchExecutor retried tool-level errors. New provider
+            # errors remain authoritative, while this preserves injected tool
+            # compatibility until extraction receives its own provider contract.
+            retry_unknown_errors=True,
+        )
 
+        def record_attempt(attempt: OperationAttempt) -> None:
             if operation == "search":
-                if stats.search_calls >= self.search_config.max_search_times:
-                    raise _BudgetExhausted
                 stats.search_calls += 1
             else:
-                if stats.extract_calls >= self.search_config.max_extract_times:
-                    raise _BudgetExhausted
                 stats.extract_calls += 1
-
-            started = time.perf_counter()
-            try:
-                result = tool.ainvoke(payload) if hasattr(tool, "ainvoke") else tool(**payload)
-                if inspect.isawaitable(result):
-                    result = await asyncio.wait_for(result, timeout=remaining)
-                stats.invocation_records.append({
-                    "operation": operation,
-                    "attempt": attempt + 1,
-                    "success": True,
-                    "duration": round(time.perf_counter() - started, 6),
-                    "payload": dict(payload),
-                })
-                return result
-            except asyncio.TimeoutError:
-                stats.invocation_records.append({
-                    "operation": operation,
-                    "attempt": attempt + 1,
-                    "success": False,
-                    "duration": round(time.perf_counter() - started, 6),
-                    "payload": dict(payload),
-                    "error": "timeout",
-                })
-                raise
-            except Exception as exc:
-                last_exception = exc
-                stats.invocation_records.append({
-                    "operation": operation,
-                    "attempt": attempt + 1,
-                    "success": False,
-                    "duration": round(time.perf_counter() - started, 6),
-                    "payload": dict(payload),
-                    "error": str(exc),
-                })
-                if attempt < attempts - 1:
+            if not attempt.success:
+                stats.failed_calls += 1
+                if attempt.attempt <= policy.max_retries:
                     if operation == "search":
                         stats.search_retries += 1
                     else:
                         stats.extract_retries += 1
+            record: dict[str, Any] = {
+                "operation": operation,
+                "attempt": attempt.attempt,
+                "success": attempt.success,
+                "duration": round(attempt.duration_seconds, 6),
+                "payload": dict(payload),
+            }
+            if attempt.error:
+                record["error"] = attempt.error
+            if attempt.retryable:
+                record["retryable"] = True
+            if attempt.retry_after_seconds is not None:
+                record["retry_after_seconds"] = attempt.retry_after_seconds
+            stats.invocation_records.append(record)
 
-        if last_exception:
-            raise last_exception
-        raise RuntimeError(f"{operation} failed without an exception")
+        async def invoke_tool() -> Any:
+            result = tool.ainvoke(payload) if hasattr(tool, "ainvoke") else tool(**payload)
+            if hasattr(result, "__await__"):
+                return await result
+            return result
+
+        execution = await execute_operation(
+            invoke_tool,
+            policy=policy,
+            local_deadline=deadline,
+            context=execution_context,
+            on_attempt=record_attempt,
+        )
+        return execution.value, execution.context
 
     @staticmethod
     def _query_text(query_input: QueryInput) -> str:
@@ -319,6 +368,7 @@ class SearchExecutor:
         partial: bool,
         stats: SearchExecutionStats,
         started: float,
+        execution_context: Optional[ExecutionContext],
     ) -> SearchExecutionResult:
         stats.elapsed_seconds = round(time.perf_counter() - started, 2)
         return SearchExecutionResult(
@@ -327,4 +377,5 @@ class SearchExecutor:
             completed=completed,
             partial=partial,
             stats=stats,
+            execution_context=execution_context,
         )

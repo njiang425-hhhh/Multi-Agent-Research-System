@@ -12,6 +12,7 @@ from src.evidence.config import AnalyzerConfig
 from src.evidence.drafts import DocumentAnalysisDraft, EvidenceDraft
 from src.evidence.protocols import DocumentAnalysisRequest
 from src.evidence.service import ResultAnalyzer
+from src.runtime_control import RunPolicy, create_execution_context
 from src.state import Document
 
 
@@ -299,3 +300,27 @@ def test_result_analyzer_stops_after_total_timeout_and_respects_partial_policy()
     assert result.completed is False
     assert result.partial is False
     assert any("timeout" in error.lower() for error in result.errors)
+
+
+def test_result_analyzer_preserves_evidence_isolation_when_runtime_budget_is_exhausted() -> None:
+    model = FakeAnalyzerModel(lambda _: DocumentAnalysisDraft(relevance_score=0.5))
+    context = create_execution_context(
+        run_id="evidence-budget",
+        thread_id="thread-evidence-budget",
+        policy=RunPolicy(max_operation_calls=1),
+    )
+
+    result = asyncio.run(
+        ResultAnalyzer(model).analyze(
+            topic="Research topic",
+            documents=[_document("doc-1"), _document("doc-2")],
+            execution_context=context,
+        )
+    )
+
+    assert [call.document_id for call in model.calls] == ["doc-1"]
+    assert result.completed is False
+    assert result.partial is True
+    assert "run operation budget exhausted" in result.errors[-1]
+    assert result.execution_context is not None
+    assert result.execution_context.operation_stop_reason == "budget_exhausted"

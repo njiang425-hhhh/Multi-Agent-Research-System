@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 from src.evidence.contracts import DocumentAnalysis, Evidence
 from src.agent_trace import AgentTraceEvent
+from src.runtime_control import ExecutionContext, TerminalReason
 
 
 class SearchQuery(BaseModel):
@@ -251,6 +252,14 @@ class ResearchState(BaseModel):
     ] = Field(default="pending", description="运行状态")
     error: Optional[str] = Field(default=None, description="错误消息（如有）")
     iteration: int = Field(default=0, description="V1 迭代次数")
+    execution_context: Optional[ExecutionContext] = Field(
+        default=None,
+        description="Runtime 持久化执行上下文；不承载业务字段",
+    )
+    terminal_reason: Optional[TerminalReason] = Field(
+        default=None,
+        description="由 Runtime 写入的终态原因；不替代 legacy error",
+    )
 
     # =========================================================================
     # 未来扩展字段：Memory / Reflection / Multi-Agent Supervisor / Evaluation

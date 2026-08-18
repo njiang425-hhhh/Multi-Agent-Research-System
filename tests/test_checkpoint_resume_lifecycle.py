@@ -178,6 +178,12 @@ def test_terminal_p3_checkpoint_returns_without_reinvoking_graph(tmp_path, monke
         async with graph_module.create_sqlite_checkpointer() as checkpointer:
             graph = create_fake_graph(checkpointer)
             await graph.ainvoke(initial, config=config)
+            # Simulate a terminal P3 checkpoint persisted before P4.1 added
+            # runtime context and terminal explanation.
+            await graph.aupdate_state(
+                config,
+                {"execution_context": None, "terminal_reason": None},
+            )
             assert (await graph.aget_state(config)).next == ()
 
         result = await graph_module.resume_research(thread_id)
@@ -186,6 +192,8 @@ def test_terminal_p3_checkpoint_returns_without_reinvoking_graph(tmp_path, monke
         assert result["run_id"] == initial.run_id
         assert result["iteration"] == initial.iteration
         assert result["iterations"] == initial.iterations
+        assert result["terminal_reason"] == "completed"
+        assert result["execution_context"].run_id == initial.run_id
 
     asyncio.run(exercise())
 

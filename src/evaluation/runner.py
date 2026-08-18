@@ -14,6 +14,8 @@ from src.evaluation.contracts import (
 )
 from src.evaluation.dataset import FIXED_EVALUATION_DATASET
 from src.evaluation.evaluator import EVALUATOR_VERSION, evaluate_run
+from src.evaluation.evaluator import EXPECTED_COMPLETED_NODES
+from src.evaluation.snapshot import build_evaluation_snapshot
 
 
 CaseRunner = Callable[[EvaluationCase], Any | Awaitable[Any]]
@@ -30,6 +32,12 @@ async def run_offline_evaluation(
     The provider is the only execution boundary. The evaluator itself only reads
     each returned result, so it neither participates in nor modifies the Graph.
     """
+    snapshot = build_evaluation_snapshot(
+        evaluator_version=EVALUATOR_VERSION,
+        dataset=dataset,
+        expected_completed_nodes=EXPECTED_COMPLETED_NODES,
+        configuration=configuration,
+    )
     results = []
     for case in dataset.cases:
         try:
@@ -42,8 +50,9 @@ async def run_offline_evaluation(
             evaluate_run(
                 state,
                 case=case,
-                dataset_id=dataset.dataset_id,
-                dataset_version=dataset.version,
+                dataset=dataset,
+                configuration=configuration,
+                evaluation_snapshot=snapshot,
             )
         )
 
@@ -55,6 +64,7 @@ async def run_offline_evaluation(
             metric_counts[metric.status] += 1
     return OfflineEvaluationResult(
         evaluator_version=EVALUATOR_VERSION,
+        evaluation_snapshot=snapshot,
         dataset_id=dataset.dataset_id,
         dataset_version=dataset.version,
         results=results,

@@ -8,7 +8,6 @@ import pytest
 import src.utils.tools as tools_module
 from src.search.providers.errors import AuthError, UnavailableError
 from src.search.providers.models import ProviderSearchResult
-from src.state import SearchResult
 
 
 class FakeProvider:
@@ -23,19 +22,6 @@ class FakeProvider:
         if isinstance(self.results_or_error, Exception):
             raise self.results_or_error
         return self.results_or_error
-
-
-class FakeLegacySearchImplementation:
-    """DuckDuckGo legacy-path substitute that keeps the old return shape."""
-
-    def __init__(self, results: list[SearchResult]) -> None:
-        self.results = results
-        self.max_results = 0
-        self.calls: list[str] = []
-
-    async def search_async(self, query: str) -> list[SearchResult]:
-        self.calls.append(query)
-        return self.results
 
 
 def test_web_search_adapts_tavily_results_to_legacy_dicts(
@@ -54,7 +40,7 @@ def test_web_search_adapts_tavily_results_to_legacy_dicts(
         ]
     )
     monkeypatch.setattr(tools_module.config, "search_provider", "tavily")
-    monkeypatch.setattr(tools_module, "_get_tavily_provider", lambda: provider)
+    monkeypatch.setattr(tools_module, "_get_search_provider", lambda _: provider)
 
     results = asyncio.run(
         tools_module.web_search.ainvoke({"query": "LangGraph", "max_results": 2})
@@ -79,7 +65,7 @@ def test_web_search_uses_configured_default_max_results_for_tavily(
     provider = FakeProvider([])
     monkeypatch.setattr(tools_module.config, "search_provider", "tavily")
     monkeypatch.setattr(tools_module.config, "max_search_results_per_query", 4)
-    monkeypatch.setattr(tools_module, "_get_tavily_provider", lambda: provider)
+    monkeypatch.setattr(tools_module, "_get_search_provider", lambda _: provider)
 
     results = asyncio.run(tools_module.web_search.ainvoke({"query": "LangGraph"}))
 
@@ -100,7 +86,7 @@ def test_web_search_propagates_tavily_provider_errors(
 ) -> None:
     provider = FakeProvider(provider_error)
     monkeypatch.setattr(tools_module.config, "search_provider", "tavily")
-    monkeypatch.setattr(tools_module, "_get_tavily_provider", lambda: provider)
+    monkeypatch.setattr(tools_module, "_get_search_provider", lambda _: provider)
 
     with pytest.raises(type(provider_error)) as exc_info:
         asyncio.run(tools_module.web_search.ainvoke({"query": "LangGraph"}))
@@ -108,34 +94,33 @@ def test_web_search_propagates_tavily_provider_errors(
     assert exc_info.value is provider_error
 
 
-def test_web_search_keeps_duckduckgo_legacy_output_contract(
+def test_web_search_adapts_duckduckgo_provider_to_legacy_output_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    legacy_search = FakeLegacySearchImplementation(
+    provider = FakeProvider(
         [
-            SearchResult(
+            ProviderSearchResult(
                 query="LangGraph",
-                title="Legacy result",
-                url="https://example.com/legacy",
-                snippet="Legacy excerpt",
-                content="Content must not be part of the legacy Tool output.",
+                title="DuckDuckGo result",
+                url="https://example.com/duck",
+                snippet="Provider excerpt",
+                provider="duckduckgo",
             )
         ]
     )
     monkeypatch.setattr(tools_module.config, "search_provider", "duckduckgo")
-    monkeypatch.setattr(tools_module, "_search_impl", legacy_search)
+    monkeypatch.setattr(tools_module, "_get_search_provider", lambda _: provider)
 
     results = asyncio.run(
         tools_module.web_search.ainvoke({"query": "LangGraph", "max_results": 3})
     )
 
-    assert legacy_search.max_results == 3
-    assert legacy_search.calls == ["LangGraph"]
+    assert provider.calls == [("LangGraph", 3)]
     assert results == [
         {
             "query": "LangGraph",
-            "title": "Legacy result",
-            "url": "https://example.com/legacy",
-            "snippet": "Legacy excerpt",
+            "title": "DuckDuckGo result",
+            "url": "https://example.com/duck",
+            "snippet": "Provider excerpt",
         }
     ]

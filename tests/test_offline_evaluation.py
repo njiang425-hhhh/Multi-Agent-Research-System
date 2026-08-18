@@ -3,10 +3,14 @@
 import asyncio
 import json
 
+import pytest
+
 from src.agent_trace import AgentTraceEvent
+from src.evaluation.contracts import EvaluationDataset
 from src.evaluation.dataset import FIXED_EVALUATION_DATASET
 from src.evaluation.evaluator import evaluate_run
 from src.evaluation.runner import run_offline_evaluation
+from src.evaluation.snapshot import build_evaluation_snapshot
 from src.evidence.contracts import Evidence
 from src.runtime_lifecycle import create_new_run_state
 from src.state import (
@@ -103,6 +107,8 @@ def test_evaluator_reads_a_complete_state_and_reports_deterministic_metrics() ->
     assert result.trace.tool_count == 1
     assert result.coverage.evidence_status == "passed"
     assert result.metadata == {"llm_as_judge": False, "reads_existing_state_only": True}
+    assert result.evaluation_snapshot is not None
+    assert result.evaluation_snapshot.snapshot_version == "p4.5.v1"
     assert state.model_dump(mode="json") == before
     json.dumps(result.model_dump(mode="json"))
 
@@ -156,5 +162,90 @@ def test_fixed_runner_evaluates_every_case_and_aggregates_without_graph_dependen
     assert suite.summary.failed_cases == 1
     assert suite.summary.unavailable_cases == 0
     assert suite.configuration == {"mode": "fake"}
+    assert suite.evaluation_snapshot is not None
+    assert all(result.evaluation_snapshot == suite.evaluation_snapshot for result in suite.results)
     assert all(result.case_id for result in suite.results)
     json.dumps(suite.model_dump(mode="json"))
+
+
+def test_evaluation_snapshot_is_stable_for_same_config_and_changes_with_config() -> None:
+    async def fake_case_runner(_case):
+        return _completed_state()
+
+    first = asyncio.run(run_offline_evaluation(fake_case_runner, configuration={"mode": "fake", "threshold": 1}))
+    same = asyncio.run(run_offline_evaluation(fake_case_runner, configuration={"threshold": 1, "mode": "fake"}))
+    changed = asyncio.run(run_offline_evaluation(fake_case_runner, configuration={"mode": "fake", "threshold": 2}))
+
+    assert first.evaluation_snapshot is not None
+    assert first.evaluation_snapshot.fingerprint == same.evaluation_snapshot.fingerprint
+    assert first.evaluation_snapshot.fingerprint != changed.evaluation_snapshot.fingerprint
+
+
+def test_evaluation_snapshot_redacts_sensitive_configuration_values() -> None:
+    async def fake_case_runner(_case):
+        return _completed_state()
+
+    suite = asyncio.run(
+        run_offline_evaluation(
+            fake_case_runner,
+            configuration={"mode": "fake", "provider": {"api_key": "not-for-results"}},
+        )
+    )
+
+    assert suite.evaluation_snapshot is not None
+    assert suite.evaluation_snapshot.configuration["provider"]["api_key"] == "[REDACTED]"
+
+
+def test_snapshot_fingerprints_actual_dataset_case_content_not_only_declared_version() -> None:
+    async def fake_case_runner(_case):
+        return _completed_state()
+
+    changed_case = FIXED_EVALUATION_DATASET.cases[0].model_copy(
+        update={"query": "Changed content under the same declared dataset version."}
+    )
+    changed_dataset = EvaluationDataset(
+        dataset_id=FIXED_EVALUATION_DATASET.dataset_id,
+        version=FIXED_EVALUATION_DATASET.version,
+        cases=[changed_case, *FIXED_EVALUATION_DATASET.cases[1:]],
+    )
+
+    original = asyncio.run(run_offline_evaluation(fake_case_runner))
+    changed = asyncio.run(run_offline_evaluation(fake_case_runner, dataset=changed_dataset))
+
+    assert original.evaluation_snapshot is not None
+    assert changed.evaluation_snapshot is not None
+    assert original.evaluation_snapshot.dataset_content_fingerprint != changed.evaluation_snapshot.dataset_content_fingerprint
+    assert original.evaluation_snapshot.fingerprint != changed.evaluation_snapshot.fingerprint
+
+
+def test_evaluator_rejects_snapshot_not_bound_to_actual_dataset_or_configuration() -> None:
+    snapshot = build_evaluation_snapshot(
+        evaluator_version="p4.5.v1",
+        dataset=FIXED_EVALUATION_DATASET,
+        expected_completed_nodes=("plan", "search", "synthesize", "write_report"),
+        configuration={"mode": "fake"},
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        evaluate_run(
+            _completed_state(),
+            case=FIXED_EVALUATION_DATASET.cases[0],
+            dataset=FIXED_EVALUATION_DATASET,
+            configuration={"mode": "changed"},
+            evaluation_snapshot=snapshot,
+        )
+
+    changed_case = FIXED_EVALUATION_DATASET.cases[0].model_copy(update={"description": "changed"})
+    changed_dataset = EvaluationDataset(
+        dataset_id=FIXED_EVALUATION_DATASET.dataset_id,
+        version=FIXED_EVALUATION_DATASET.version,
+        cases=[changed_case, *FIXED_EVALUATION_DATASET.cases[1:]],
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        evaluate_run(
+            _completed_state(),
+            case=changed_case,
+            dataset=changed_dataset,
+            configuration={"mode": "fake"},
+            evaluation_snapshot=snapshot,
+        )

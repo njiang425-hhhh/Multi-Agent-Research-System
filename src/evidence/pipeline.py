@@ -11,6 +11,7 @@ from src.evidence.finding_models import FindingAggregationResult
 from src.evidence.models import AnalysisResult, DocumentAnalysis, Evidence
 from src.evidence.protocols import AnalyzerModel
 from src.evidence.service import ResultAnalyzer
+from src.runtime_control import ExecutionContext
 from src.state import Document, Finding
 
 
@@ -88,12 +89,14 @@ class EvidencePipeline:
         topic: str,
         documents: Sequence[Document],
         objectives: Sequence[str] = (),
+        execution_context: Optional[ExecutionContext] = None,
     ) -> EvidencePipelineResult:
         """Analyze documents and aggregate only eligible Evidence records."""
         analysis_result = await self.analyzer.analyze(
             topic=topic,
             documents=documents,
             objectives=objectives,
+            execution_context=execution_context,
         )
         errors = list(analysis_result.errors)
 

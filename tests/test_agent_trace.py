@@ -5,7 +5,13 @@ import asyncio
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
-from src.agent_trace import AgentTraceEvent, append_trace_events, trace_node_execution
+from src.agent_trace import (
+    AgentTraceEvent,
+    TraceRetentionPolicy,
+    _attempt,
+    append_trace_events,
+    trace_node_execution,
+)
 from src import graph as graph_module
 from src.runtime_lifecycle import create_new_run_state
 from src.state import ResearchPlan, ResearchState, SearchQuery, SearchResult
@@ -92,6 +98,47 @@ def test_resume_append_preserves_prior_attempts_and_deduplicates_only_same_event
     assert [event.attempt for event in node_events] == [1, 2]
     assert [event.status for event in node_events] == ["failed", "completed"]
     assert len(append_trace_events(node_events, node_events)) == 2
+
+
+def test_trace_retention_redacts_payload_and_preserves_future_attempt_identity() -> None:
+    policy = TraceRetentionPolicy(max_events=8, max_metadata_string_chars=32)
+    nodes = [
+        AgentTraceEvent(
+            event_id=f"node-{node}", trace_id="trace-run", node=node, agent="Fake",
+            operation=node, event_type="node", attempt=1,
+            started_at="2026-01-01T00:00:00+00:00", ended_at="2026-01-01T00:00:01+00:00",
+        )
+        for node in ("plan", "search", "synthesize", "write_report")
+    ]
+    tools = [
+        AgentTraceEvent(
+            event_id=f"tool-{attempt}", trace_id="trace-run", node="search", agent="ResearchSearcher",
+            operation="search", event_type="tool", attempt=attempt,
+            started_at="2026-01-01T00:00:00+00:00", ended_at="2026-01-01T00:00:01+00:00",
+            metadata={
+                "payload": {"authorization": "Bearer fake-secret", "query": "private query"},
+                "note": "x" * 80,
+            },
+        )
+        for attempt in range(1, 13)
+    ]
+
+    retained = append_trace_events(nodes, tools, retention_policy=policy)
+
+    assert len(retained) == policy.max_events
+    marker = retained[0]
+    assert marker.event_type == "retention"
+    assert marker.metadata["attempt_offsets"]["search\x1ftool\x1fsearch"] == 12
+    assert {event.node for event in retained if event.event_type == "node"} == {
+        "plan", "search", "synthesize", "write_report"
+    }
+    retained_tool = next(event for event in retained if event.event_type == "tool")
+    assert retained_tool.metadata["payload"] == "[REDACTED]"
+    assert retained_tool.metadata["note"].endswith("…[TRUNCATED]")
+    assert _attempt(retained, node="search", event_type="tool", operation="search") == 13
+    assert [event.event_id for event in append_trace_events(retained, (), retention_policy=policy)] == [
+        event.event_id for event in retained
+    ]
 
 
 def test_graph_wraps_all_four_existing_nodes_with_trace_without_changing_routes(monkeypatch) -> None:

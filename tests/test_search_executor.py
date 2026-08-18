@@ -6,6 +6,7 @@ from typing import Any
 
 from src.search.config import SearchConfig
 from src.search.executor import SearchExecutor
+from src.runtime_control import RunPolicy, create_execution_context
 
 
 class FakeSearchTool:
@@ -259,3 +260,30 @@ def test_search_executor_records_each_tool_retry_for_trace_projection() -> None:
     search_attempts = [item for item in execution.stats.invocation_records if item["operation"] == "search"]
     assert [item["attempt"] for item in search_attempts] == [1, 2]
     assert [item["success"] for item in search_attempts] == [False, True]
+
+
+def test_search_executor_propagates_runtime_budget_as_partial_output() -> None:
+    executor = SearchExecutor(
+        search_config=SearchConfig(
+            mode="deterministic_v2",
+            max_search_times=1,
+            max_extract_times=1,
+            allow_partial_results=True,
+        ),
+        search_tool=FakeSearchTool(lambda query, _: [_result(query, "https://example.com/one")]),
+        extract_tool=FakeExtractTool(lambda _: "unreachable"),
+    )
+    context = create_execution_context(
+        run_id="search-budget",
+        thread_id="thread-search-budget",
+        policy=RunPolicy(max_operation_calls=1),
+    )
+
+    execution = asyncio.run(executor.execute(["topic"], execution_context=context))
+
+    assert execution.search_results[0].content is None
+    assert execution.completed is False
+    assert execution.partial is True
+    assert execution.execution_context is not None
+    assert execution.execution_context.operation_calls == 1
+    assert execution.execution_context.operation_stop_reason == "budget_exhausted"

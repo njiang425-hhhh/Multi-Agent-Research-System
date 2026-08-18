@@ -9,6 +9,13 @@ from src.evidence.config import AnalyzerConfig
 from src.evidence.drafts import DocumentAnalysisDraft, EvidenceDraft
 from src.evidence.models import AnalysisResult, DocumentAnalysis, Evidence
 from src.evidence.protocols import AnalyzerModel, DocumentAnalysisRequest
+from src.execution_policy import (
+    OperationBudgetExhausted,
+    OperationDeadlineExceeded,
+    OperationExecutionPolicy,
+    execute_operation,
+)
+from src.runtime_control import ExecutionContext
 from src.state import Document
 
 
@@ -29,6 +36,7 @@ class ResultAnalyzer:
         topic: str,
         documents: Sequence[Document],
         objectives: Sequence[str] = (),
+        execution_context: Optional[ExecutionContext] = None,
     ) -> AnalysisResult:
         """Produce document analyses and grounded evidence for existing sources."""
         normalized_topic = topic.strip()
@@ -47,6 +55,7 @@ class ResultAnalyzer:
 
         deadline = time.monotonic() + self.config.total_timeout_seconds
         timed_out = False
+        current_context = execution_context
 
         for document in selected_documents:
             problem = self._document_problem(document)
@@ -82,8 +91,16 @@ class ResultAnalyzer:
             )
 
             try:
-                draft = await self._invoke_with_retries(request, deadline)
-            except asyncio.TimeoutError:
+                draft, current_context = await self._invoke_with_retries(
+                    request, deadline, current_context
+                )
+            except OperationBudgetExhausted as exc:
+                current_context = exc.context or current_context
+                errors.append("Result analyzer stopped after run operation budget exhausted")
+                had_incomplete_work = True
+                break
+            except (OperationDeadlineExceeded, asyncio.TimeoutError) as exc:
+                current_context = getattr(exc, "context", None) or current_context
                 errors.append("Result analyzer timeout before all documents could be analyzed")
                 had_incomplete_work = True
                 timed_out = True
@@ -127,35 +144,34 @@ class ResultAnalyzer:
             errors=errors,
             completed=completed,
             partial=partial,
+            execution_context=current_context,
         )
 
     async def _invoke_with_retries(
         self,
         request: DocumentAnalysisRequest,
         deadline: float,
-    ) -> DocumentAnalysisDraft:
+        execution_context: Optional[ExecutionContext],
+    ) -> tuple[DocumentAnalysisDraft, Optional[ExecutionContext]]:
         """Invoke only the injected model within the analyzer-owned deadline."""
-        last_error: Optional[Exception] = None
-        for _ in range(self.config.retry_times + 1):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise asyncio.TimeoutError
-            try:
-                draft = await asyncio.wait_for(
-                    self.model.analyze_document(request),
-                    timeout=remaining,
-                )
-                if not isinstance(draft, DocumentAnalysisDraft):
-                    raise TypeError("AnalyzerModel must return DocumentAnalysisDraft")
-                return draft
-            except asyncio.TimeoutError:
-                raise
-            except Exception as exc:
-                last_error = exc
+        async def invoke_model() -> DocumentAnalysisDraft:
+            draft = await self.model.analyze_document(request)
+            if not isinstance(draft, DocumentAnalysisDraft):
+                raise TypeError("AnalyzerModel must return DocumentAnalysisDraft")
+            return draft
 
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("AnalyzerModel failed without an exception")
+        execution = await execute_operation(
+            invoke_model,
+            policy=OperationExecutionPolicy(
+                max_retries=self.config.retry_times,
+                # AnalyzerModel is an injected legacy boundary. Preserve its
+                # bounded retry behavior until it gains typed provider errors.
+                retry_unknown_errors=True,
+            ),
+            local_deadline=deadline,
+            context=execution_context,
+        )
+        return execution.value, execution.context
 
     def _build_document_output(
         self,

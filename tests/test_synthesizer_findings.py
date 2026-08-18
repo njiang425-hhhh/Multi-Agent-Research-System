@@ -107,13 +107,14 @@ def test_synthesizer_error_patch_keeps_existing_behavior_without_findings(monkey
 
     patch = asyncio.run(synthesizer.synthesize(_state()))
 
-    assert patch == {
-        "error": "综合失败：fake synthesis failure",
-        "iterations": 1,
-        "iteration": 1,
-        "current_stage": "failed",
-        "status": "failed",
-    }
+    assert patch["error"] == "综合失败：fake synthesis failure"
+    assert patch["iterations"] == 1
+    assert patch["iteration"] == 1
+    assert patch["current_stage"] == "failed"
+    assert patch["status"] == "failed"
+    assert patch["llm_calls"] == 1
+    assert patch["usage"].llm_calls == 1
+    assert patch["llm_call_details"][0]["success"] is False
 
 
 def test_writer_continues_to_use_legacy_key_findings_not_structured_findings(monkeypatch) -> None:

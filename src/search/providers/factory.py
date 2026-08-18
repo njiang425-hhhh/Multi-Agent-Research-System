@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Dict, Optional
 
 from src.search.providers.base import SearchProvider
+from src.search.providers.duckduckgo import DuckDuckGoProvider
 from src.search.providers.errors import UnavailableError
 from src.search.providers.tavily import TavilyProvider
 
@@ -12,14 +13,15 @@ ProviderBuilder = Callable[..., SearchProvider]
 SUPPORTED_PROVIDERS = frozenset({"tavily", "duckduckgo"})
 DEFAULT_BUILDERS: Mapping[str, ProviderBuilder] = {
     "tavily": TavilyProvider,
+    "duckduckgo": DuckDuckGoProvider,
 }
 
 
 class SearchProviderFactory:
     """Select and construct a registered provider by configuration name.
 
-    Tavily is available by default. DuckDuckGo remains supported by name but
-    will be registered only after its provider migration is complete.
+    Every supported provider is registered through this one factory. Provider
+    selection is deliberately independent from retry/fallback policy.
     """
 
     def __init__(

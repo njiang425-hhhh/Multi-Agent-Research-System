@@ -10,7 +10,7 @@ from src.search.config import SearchConfig
 def test_search_config_uses_documented_defaults() -> None:
     config = SearchConfig()
 
-    assert config.mode == "legacy_agent"
+    assert config.mode == "deterministic_v2"
     assert config.max_search_times == 3
     assert config.max_extract_times == 4
     assert config.max_results_per_search == 3
@@ -18,6 +18,15 @@ def test_search_config_uses_documented_defaults() -> None:
     assert config.search_retry_times == 0
     assert config.extract_retry_times == 0
     assert config.allow_partial_results is True
+
+
+def test_project_default_uses_the_runtime_owned_deterministic_search_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_config = SimpleNamespace(max_search_queries=3, max_search_results_per_query=3)
+    monkeypatch.delenv("SEARCHER_MODE", raising=False)
+
+    assert SearchConfig.from_project_config(project_config).mode == "deterministic_v2"
 
 
 @pytest.mark.parametrize("mode", ["legacy_agent", "deterministic_v2"])

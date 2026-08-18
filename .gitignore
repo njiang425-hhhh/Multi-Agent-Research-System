@@ -18,6 +18,7 @@ venv/
 
 # Project
 .cache/
+.pytest-*/
 .chainlit/
 .files/
 outputs/

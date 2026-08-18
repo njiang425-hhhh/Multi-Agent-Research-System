@@ -9,20 +9,16 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse
 import logging
 from enum import Enum
-from abc import ABC, abstractmethod
 
 import httpx
 from bs4 import BeautifulSoup
-from ddgs import DDGS
-from tavily import AsyncTavilyClient
 
 from src.state import SearchResult
 from src.exceptions import (
-    SearchError,
-    RateLimitError,
     ContentExtractionError,
-    CircuitOpenError
 )
+from src.search.providers.base import SearchProvider
+from src.search.providers.factory import SearchProviderFactory
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -170,183 +166,31 @@ def is_valid_url(url: str) -> bool:
 
 
 # =============================================================================
-# 搜索提供商抽象
+# 搜索兼容适配器
 # =============================================================================
 
-class SearchProvider(ABC):
-    """搜索提供商的抽象基类。"""
-    
-    @abstractmethod
-    async def search(self, query: str, max_results: int) -> List[SearchResult]:
-        pass
-    
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        pass
-
-
-class DuckDuckGoProvider(SearchProvider):
-    """带速率限制和熔断器的 DuckDuckGo 搜索提供商。"""
-    
-    def __init__(self, max_results: int = 5):
-        self.max_results = max_results
-        self.last_search_time = 0.0
-        self.min_delay = 2.0
-        self.circuit_breaker = CircuitBreaker(
-            name="duckduckgo",
-            failure_threshold=3,
-            reset_timeout=60.0
-        )
-    
-    @property
-    def name(self) -> str:
-        return "duckduckgo"
-    
-    async def search(self, query: str, max_results: Optional[int] = None) -> List[SearchResult]:
-        if not self.circuit_breaker.can_execute():
-            retry_after = self.circuit_breaker.get_retry_after()
-            raise CircuitOpenError("duckduckgo", retry_after)
-        
-        results_count = max_results or self.max_results
-        
-        try:
-            elapsed = time.time() - self.last_search_time
-            if elapsed < self.min_delay:
-                wait_time = self.min_delay - elapsed
-                logger.debug(f"触发速率限制，等待 {wait_time:.1f} 秒")
-                await asyncio.sleep(wait_time)
-            
-            logger.info(f"正在使用 DuckDuckGo 搜索：{query}")
-            
-            results = await self._execute_search(query, results_count)
-            
-            self.last_search_time = time.time()
-            self.circuit_breaker.record_success()
-            
-            logger.info(f"找到 {len(results)} 个结果：{query}")
-            return results
-            
-        except CircuitOpenError:
-            raise
-        except Exception as e:
-            self.circuit_breaker.record_failure()
-            self.last_search_time = time.time()
-            
-            error_str = str(e).lower()
-            if "ratelimit" in error_str or "202" in error_str:
-                raise RateLimitError(
-                    message=f"DuckDuckGo 速率限制：{str(e)}",
-                    retry_after=60,
-                    service="duckduckgo"
-                )
-            
-            raise SearchError(f"搜索失败：'{query}'", details=str(e))
-    
-    async def _execute_search(self, query: str, max_results: int) -> List[SearchResult]:
-        max_retries = 3
-        
-        for attempt in range(max_retries):
-            try:
-                search_results = await asyncio.to_thread(
-                    self._sync_search, query, max_results
-                )
-                return search_results
-            except Exception as e:
-                error_str = str(e).lower()
-                if ("ratelimit" in error_str or "202" in error_str) and attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 5
-                    logger.warning(f"触发速率限制，等待 {wait_time} 秒（第 {attempt + 1}/{max_retries} 次尝试）")
-                    await asyncio.sleep(wait_time)
-                else:
-                    raise
-        
-        return []
-    
-    def _sync_search(self, query: str, max_results: int) -> List[SearchResult]:
-        results = []
-        ddgs = DDGS()
-        search_results = list(ddgs.text(query, max_results=max_results))
-        
-        for result in search_results:
-            results.append(SearchResult(
-                query=query,
-                title=result.get("title", ""),
-                url=result.get("href", ""),
-                snippet=result.get("body", "")
-            ))
-        
-        return results
-
-
-class TavilyProvider(SearchProvider):
-    """带熔断器的 Tavily 搜索提供商。"""
-
-    def __init__(self, api_key: Optional[str] = None, max_results: int = 5):
-        self.max_results = max_results
-        self.client = AsyncTavilyClient(api_key=api_key)
-        self.circuit_breaker = CircuitBreaker(
-            name="tavily",
-            failure_threshold=3,
-            reset_timeout=60.0
-        )
-
-    @property
-    def name(self) -> str:
-        return "tavily"
-
-    async def search(self, query: str, max_results: Optional[int] = None) -> List[SearchResult]:
-        if not self.circuit_breaker.can_execute():
-            retry_after = self.circuit_breaker.get_retry_after()
-            raise CircuitOpenError("tavily", retry_after)
-
-        results_count = max_results or self.max_results
-
-        try:
-            logger.info(f"正在使用 Tavily 搜索：{query}")
-
-            response = await self.client.search(
-                query=query,
-                max_results=results_count,
-                search_depth="basic",
-            )
-
-            self.circuit_breaker.record_success()
-
-            results = []
-            for item in response.get("results", []):
-                results.append(SearchResult(
-                    query=query,
-                    title=item.get("title", ""),
-                    url=item.get("url", ""),
-                    snippet=item.get("content", ""),
-                ))
-
-            logger.info(f"找到 {len(results)} 个结果：{query}")
-            return results
-
-        except CircuitOpenError:
-            raise
-        except Exception as e:
-            self.circuit_breaker.record_failure()
-
-            error_str = str(e).lower()
-            if "rate" in error_str or "limit" in error_str or "429" in error_str:
-                raise RateLimitError(
-                    message=f"Tavily 速率限制：{str(e)}",
-                    retry_after=60,
-                    service="tavily"
-                )
-
-            raise SearchError(f"搜索失败：'{query}'", details=str(e))
-
-
 class WebSearchTool:
-    """支持提供商抽象和回退机制的网络搜索工具。"""
-    
-    def __init__(self, max_results: int = 5, providers: Optional[List[SearchProvider]] = None):
+    """Legacy result-shape adapter over the unified provider contract.
+
+    This compatibility facade deliberately does not provide fallback, retry,
+    rate pacing, or circuit breaking. Those policies now live at the P4.2
+    operation boundary; providers only transport and classify errors.
+    """
+
+    def __init__(
+        self,
+        max_results: int = 5,
+        providers: Optional[List[SearchProvider]] = None,
+        provider_name: str = "duckduckgo",
+    ):
         self.max_results = max_results
-        self.providers = providers or [DuckDuckGoProvider(max_results)]
+        if providers is not None and len(providers) != 1:
+            raise ValueError("WebSearchTool supports exactly one provider; fallback is runtime policy")
+        self.provider = (
+            providers[0]
+            if providers
+            else SearchProviderFactory().create(provider_name)
+        )
     
     def search(self, query: str) -> List[SearchResult]:
         """同步搜索——在事件循环中运行异步搜索。"""
@@ -359,28 +203,16 @@ class WebSearchTool:
         return loop.run_until_complete(self.search_async(query))
     
     async def search_async(self, query: str) -> List[SearchResult]:
-        """带提供商回退机制的异步搜索。"""
-        last_error: Optional[Exception] = None
-        
-        for provider in self.providers:
-            try:
-                return await provider.search(query, self.max_results)
-            except CircuitOpenError as e:
-                logger.warning(f"提供商 {provider.name} 的熔断器已打开，尝试下一个提供商")
-                last_error = e
-                continue
-            except RateLimitError as e:
-                logger.warning(f"提供商 {provider.name} 触发速率限制：{e}")
-                last_error = e
-                continue
-            except SearchError as e:
-                logger.error(f"提供商 {provider.name} 出错：{e}")
-                last_error = e
-                continue
-        
-        if last_error:
-            logger.error(f"所有搜索提供商均失败。最后一个错误：{last_error}")
-        return []
+        """Return the historic result model while preserving typed errors."""
+        return [
+            SearchResult(
+                query=result.query,
+                title=result.title,
+                url=result.url,
+                snippet=result.snippet,
+            )
+            for result in await self.provider.search(query, self.max_results)
+        ]
 
 
 # =============================================================================

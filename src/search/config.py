@@ -12,11 +12,13 @@ SearchMode = Literal["legacy_agent", "deterministic_v2"]
 class SearchConfig:
     """Hard runtime limits owned by the Search Executor.
 
-    The legacy Agent loop has separate compatibility limits. These fields are
-    intentionally independent from LangGraph's recursion configuration.
+    ``deterministic_v2`` is the supported default: its external operations use
+    the shared runtime execution contract. ``legacy_agent`` remains an
+    explicit compatibility mode for historical callers; its opaque tool loop
+    does not claim the P4 global operation-budget/retry guarantees.
     """
 
-    mode: SearchMode = "legacy_agent"
+    mode: SearchMode = "deterministic_v2"
     max_search_times: int = 3
     max_extract_times: int = 4
     max_results_per_search: int = 3
@@ -53,7 +55,7 @@ class SearchConfig:
         config.py and Graph do not need to know about the new executor.
         """
 
-        mode = os.getenv("SEARCHER_MODE", "legacy_agent")
+        mode = os.getenv("SEARCHER_MODE", "deterministic_v2")
         return cls(
             mode=mode,
             max_search_times=min(int(project_config.max_search_queries), 3),

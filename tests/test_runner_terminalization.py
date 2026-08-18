@@ -61,7 +61,12 @@ def test_runner_keeps_a_normal_completed_result_unchanged(monkeypatch) -> None:
     assert result["status"] == "completed"
     assert result["current_stage"] == "complete"
     assert result["error"] is None
-    assert graph.update_calls == []
+    assert graph.update_calls == [
+        (
+            {"configurable": {"thread_id": "fake-terminal-thread"}},
+            {"terminal_reason": "completed"},
+        )
+    ]
 
 
 def test_runner_terminalizes_router_early_end_without_creating_legacy_error(monkeypatch) -> None:
@@ -82,7 +87,11 @@ def test_runner_terminalizes_router_early_end_without_creating_legacy_error(monk
     assert graph.update_calls == [
         (
             {"configurable": {"thread_id": "fake-terminal-thread"}},
-            {"current_stage": "failed", "status": "failed"},
+            {
+                "current_stage": "failed",
+                "status": "failed",
+                "terminal_reason": "router_terminated",
+            },
         )
     ]
 
@@ -102,7 +111,12 @@ def test_runner_keeps_existing_agent_failure_idempotent(monkeypatch) -> None:
     assert result["status"] == "failed"
     assert result["current_stage"] == "failed"
     assert result["error"] == "existing agent error"
-    assert graph.update_calls == []
+    assert graph.update_calls == [
+        (
+            {"configurable": {"thread_id": "fake-terminal-thread"}},
+            {"terminal_reason": "agent_failed"},
+        )
+    ]
 
 
 def test_runner_reraises_unhandled_error_after_persisting_failure_patch(monkeypatch) -> None:
@@ -125,7 +139,11 @@ def test_runner_reraises_unhandled_error_after_persisting_failure_patch(monkeypa
     assert graph.update_calls == [
         (
             {"configurable": {"thread_id": "fake-terminal-thread"}},
-            {"current_stage": "failed", "status": "failed"},
+            {
+                "current_stage": "failed",
+                "status": "failed",
+                "terminal_reason": "unhandled_exception",
+            },
         )
     ]
 

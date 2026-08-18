@@ -1,10 +1,11 @@
 """Pydantic contracts for the standalone Evidence Layer."""
 
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
 from src.evidence.contracts import DocumentAnalysis, Evidence
+from src.runtime_control import ExecutionContext
 from src.state import Document
 
 
@@ -25,6 +26,10 @@ class AnalysisResult(BaseModel):
     errors: List[str] = Field(default_factory=list, description="Non-fatal analysis errors")
     completed: bool = Field(default=True, description="Whether all requested work completed")
     partial: bool = Field(default=False, description="Whether usable output is incomplete")
+    execution_context: Optional[ExecutionContext] = Field(
+        default=None,
+        description="Runtime control context forwarded without Evidence ownership",
+    )
 
     @model_validator(mode="after")
     def validate_references(self) -> "AnalysisResult":

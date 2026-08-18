@@ -12,6 +12,20 @@ MetricStatus = Literal["passed", "failed", "unavailable"]
 EvaluationOutcome = Literal["passed", "failed", "unavailable"]
 
 
+class EvaluationSnapshot(BaseModel):
+    """Versioned, deterministic basis for one comparable evaluation result."""
+
+    snapshot_version: str = "p4.5.v1"
+    evaluator_version: str = "p4.5.v1"
+    dataset_id: str | None = None
+    dataset_version: str | None = None
+    dataset_content_fingerprint: str | None = None
+    expected_completed_nodes: list[str] = Field(default_factory=list)
+    metric_names: list[str] = Field(default_factory=list)
+    configuration: dict[str, Any] = Field(default_factory=dict)
+    fingerprint: str = Field(min_length=1)
+
+
 class EvaluationCase(BaseModel):
     """One fixed, versioned research input for an offline suite."""
 
@@ -81,6 +95,7 @@ class RunEvaluationResult(BaseModel):
 
     evaluation_id: str = Field(default_factory=lambda: str(uuid4()))
     evaluator_version: str = "p3.2b.v1"
+    evaluation_snapshot: EvaluationSnapshot | None = None
     dataset_id: str | None = None
     dataset_version: str | None = None
     case_id: str | None = None
@@ -108,6 +123,7 @@ class OfflineEvaluationResult(BaseModel):
     """Serializable suite-level result suitable for later comparison."""
 
     evaluator_version: str = "p3.2b.v1"
+    evaluation_snapshot: EvaluationSnapshot | None = None
     dataset_id: str
     dataset_version: str
     results: list[RunEvaluationResult] = Field(default_factory=list)

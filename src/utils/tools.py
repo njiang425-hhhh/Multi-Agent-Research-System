@@ -6,9 +6,7 @@ import logging
 import json
 
 from src.utils.web_utils import (
-    WebSearchTool as WebSearchImpl,
     ContentExtractor as ContentExtractorImpl,
-    DuckDuckGoProvider,
 )
 from src.search.providers.base import SearchProvider
 from src.search.providers.factory import SearchProviderFactory
@@ -21,31 +19,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# 使用配置初始化工具实现
-def _build_search_providers():
-    """构建尚未迁移到新 Provider Layer 的旧 DuckDuckGo 实现。"""
-    return [DuckDuckGoProvider(config.max_search_results_per_query)]
-
-
-_search_impl = WebSearchImpl(
-    max_results=config.max_search_results_per_query,
-    providers=_build_search_providers(),
-)
 _search_provider_factory = SearchProviderFactory()
 _search_provider_cache: Dict[str, SearchProvider] = {}
 _extractor_impl = ContentExtractorImpl(timeout=10)
 _citation_formatter = CitationFormatter()
 
 
-def _get_tavily_provider() -> SearchProvider:
-    """Lazily create the configured Tavily provider through the factory."""
-    provider = _search_provider_cache.get("tavily")
+def _get_search_provider(provider_name: str) -> SearchProvider:
+    """Lazily create one configured provider through the unified factory."""
+    provider = _search_provider_cache.get(provider_name)
     if provider is None:
-        provider = _search_provider_factory.create(
-            "tavily",
-            api_key=config.tavily_api_key or None,
-        )
-        _search_provider_cache["tavily"] = provider
+        kwargs = {"api_key": config.tavily_api_key or None} if provider_name == "tavily" else {}
+        provider = _search_provider_factory.create(provider_name, **kwargs)
+        _search_provider_cache[provider_name] = provider
     return provider
 
 
@@ -87,29 +73,10 @@ async def web_search(query: str, max_results: int = None) -> List[dict]:
     if max_results is None:
         max_results = config.max_search_results_per_query
 
-    if config.search_provider == "tavily":
-        provider = _get_tavily_provider()
-        provider_results = await provider.search(query, max_results)
-        legacy_results = [
-            _to_legacy_search_result(result)
-            for result in provider_results
-        ]
-        return _serialize_search_results(legacy_results)
-
-    if config.search_provider != "duckduckgo":
-        raise ValueError(
-            f"不支持的 SEARCH_PROVIDER：{config.search_provider}"
-        )
-
-    try:
-        if _search_impl.max_results != max_results:
-            _search_impl.max_results = max_results
-
-        results = await _search_impl.search_async(query)
-        return _serialize_search_results(results)
-    except Exception as e:
-        logger.error(f"网络搜索工具出错：{str(e)}")
-        return []
+    provider = _get_search_provider(config.search_provider)
+    provider_results = await provider.search(query, max_results)
+    legacy_results = [_to_legacy_search_result(result) for result in provider_results]
+    return _serialize_search_results(legacy_results)
 
 
 @tool

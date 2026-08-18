@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
 from src.state import SearchResult
+from src.runtime_control import ExecutionContext
 
 
 @dataclass(slots=True)
@@ -30,3 +31,4 @@ class SearchExecutionResult:
     completed: bool = True
     partial: bool = False
     stats: SearchExecutionStats = field(default_factory=SearchExecutionStats)
+    execution_context: Optional[ExecutionContext] = None

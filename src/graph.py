@@ -7,6 +7,7 @@
 import os
 import uuid
 import sqlite3
+import asyncio
 from typing import Optional, Dict, Any
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -20,14 +21,19 @@ from src.runtime_lifecycle import (
     adopt_terminal_lifecycle_patch,
     apply_terminal_lifecycle,
     build_cache_replay_state,
+    cancelled_lifecycle_patch,
     classify_terminal_lifecycle,
     create_new_run_state,
-    failed_lifecycle_patch,
+    execution_context_from_state,
     filter_runtime_owned_input,
     is_successful_cache_payload,
     resume_lifecycle_patch,
     start_run,
+    timeout_lifecycle_patch,
+    unhandled_exception_lifecycle_patch,
 )
+from src.runtime_control import ExecutionContext, RunPolicy, invoke_with_execution_context
+from src.runtime_lease import PersistentRunLease
 from src.agents import ResearchPlanner, ResearchSearcher, ResearchSynthesizer, ReportWriter
 from src.agent_trace import trace_node_execution
 from src.utils.cache import ResearchCache
@@ -39,9 +45,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def _create_initial_state(topic: str) -> ResearchState:
+PERSISTENT_LEASE_TTL_SECONDS = 300.0
+
+
+def _create_initial_state(
+    topic: str,
+    *,
+    thread_id: Optional[str] = None,
+    run_policy: Optional[RunPolicy] = None,
+) -> ResearchState:
     """Create a fresh, pending run at the graph entry boundary."""
-    return create_new_run_state(topic)
+    return create_new_run_state(topic, thread_id=thread_id, run_policy=run_policy)
 
 
 # =============================================================================
@@ -224,14 +238,26 @@ async def _invoke_with_terminal_lifecycle(
     run_config: Optional[Dict[str, Any]],
     *,
     has_checkpointer: bool,
+    execution_context: Optional[ExecutionContext] = None,
 ) -> Dict[str, Any]:
     """Invoke a graph and apply terminal runtime lifecycle semantics."""
     try:
-        final_state = await graph.ainvoke(initial_state, config=run_config)
+        final_state = await invoke_with_execution_context(
+            lambda: graph.ainvoke(initial_state, config=run_config),
+            execution_context,
+        )
+    except asyncio.CancelledError:
+        if has_checkpointer:
+            await _persist_lifecycle_patch(graph, run_config, cancelled_lifecycle_patch())
+        raise
+    except asyncio.TimeoutError:
+        if has_checkpointer:
+            await _persist_lifecycle_patch(graph, run_config, timeout_lifecycle_patch())
+        raise
     except Exception as exc:
         if has_checkpointer:
             trace_events = getattr(exc, "_agent_trace_events", None)
-            patch: Dict[str, Any] = failed_lifecycle_patch()
+            patch: Dict[str, Any] = unhandled_exception_lifecycle_patch()
             if trace_events is not None:
                 patch["agent_trace"] = trace_events
             await _persist_lifecycle_patch(graph, run_config, patch)
@@ -247,7 +273,8 @@ async def run_research(
     verbose: bool = True, 
     use_cache: bool = True,
     use_checkpoints: bool = True,
-    thread_id: Optional[str] = None
+    thread_id: Optional[str] = None,
+    run_policy: Optional[RunPolicy] = None,
 ) -> Dict[str, Any]:
     """运行指定主题的研究流程。
     
@@ -267,16 +294,14 @@ async def run_research(
     if use_cache:
         cached_result = cache.get(topic)
         if cached_result:
-            replay_state = build_cache_replay_state(cached_result)
+            replay_state = build_cache_replay_state(cached_result, run_policy=run_policy)
             if replay_state:
                 logger.info("使用缓存的研究结果进行 replay run")
                 return replay_state
             logger.info("缓存结果不是可 replay 的完成报告，将执行 Graph")
     
-    initial_state = start_run(_create_initial_state(topic))
-    
     run_config: Dict[str, Any] = {}
-    
+    tid: Optional[str] = None
     if use_checkpoints:
         checkpointer = create_memory_checkpointer()
         tid = thread_id or f"research-{uuid.uuid4().hex[:8]}"
@@ -284,6 +309,10 @@ async def run_research(
         logger.info(f"使用 thread_id 进行检查点跟踪：{tid}")
     else:
         checkpointer = None
+
+    initial_state = start_run(
+        _create_initial_state(topic, thread_id=tid, run_policy=run_policy)
+    )
     
     graph = create_research_graph(checkpointer=checkpointer)
     
@@ -293,6 +322,7 @@ async def run_research(
             initial_state,
             run_config if run_config else None,
             has_checkpointer=use_checkpoints,
+            execution_context=initial_state.execution_context,
         )
     except Exception as e:
         logger.error(f"研究流程失败：{e}")
@@ -315,7 +345,8 @@ async def run_research_with_persistence(
     topic: str, 
     verbose: bool = True, 
     use_cache: bool = True,
-    thread_id: Optional[str] = None
+    thread_id: Optional[str] = None,
+    run_policy: Optional[RunPolicy] = None,
 ) -> Dict[str, Any]:
     """运行带 SQLite 持久化的研究流程，以便崩溃恢复。
     
@@ -336,32 +367,40 @@ async def run_research_with_persistence(
     if use_cache:
         cached_result = cache.get(topic)
         if cached_result:
-            replay_state = build_cache_replay_state(cached_result)
+            # A replay executes no Graph nodes and touches no checkpoint, so it
+            # intentionally has no thread lease even if a caller supplied one.
+            replay_state = build_cache_replay_state(cached_result, run_policy=run_policy)
             if replay_state:
                 logger.info("使用缓存的研究结果进行 replay run")
                 return replay_state
             logger.info("缓存结果不是可 replay 的完成报告，将执行 Graph")
     
-    initial_state = start_run(_create_initial_state(topic))
-    
     tid = thread_id or f"research-{uuid.uuid4().hex[:8]}"
     run_config = {"configurable": {"thread_id": tid}}
     logger.info(f"使用 thread_id 进行持久化检查点跟踪：{tid}")
-    
-    async with create_sqlite_checkpointer() as checkpointer:
-        graph = create_research_graph(checkpointer=checkpointer)
-        
-        try:
-            final_state = await _invoke_with_terminal_lifecycle(
-                graph,
-                initial_state,
-                run_config,
-                has_checkpointer=True,
-            )
-        except Exception as e:
-            logger.error(f"研究流程失败：{e}")
-            logger.info(f"流程状态已保存到磁盘。可使用 thread_id 恢复：{tid}")
-            raise
+    initial_state = start_run(
+        _create_initial_state(topic, thread_id=tid, run_policy=run_policy)
+    )
+
+    async with PersistentRunLease(
+        get_checkpoint_path(), tid, ttl_seconds=PERSISTENT_LEASE_TTL_SECONDS
+    ) as lease:
+        async with create_sqlite_checkpointer() as checkpointer:
+            graph = create_research_graph(checkpointer=checkpointer)
+
+            try:
+                final_state = await _invoke_with_terminal_lifecycle(
+                    graph,
+                    initial_state,
+                    run_config,
+                    has_checkpointer=True,
+                    execution_context=initial_state.execution_context,
+                )
+                lease.assert_held()
+            except Exception as e:
+                logger.error(f"研究流程失败：{e}")
+                logger.info(f"流程状态已保存到磁盘。可使用 thread_id 恢复：{tid}")
+                raise
     
     if use_cache and is_successful_cache_payload(final_state):
         cache.set(topic, final_state)
@@ -391,37 +430,91 @@ async def resume_research(
     
     run_config = {"configurable": {"thread_id": thread_id}}
     
-    async with create_sqlite_checkpointer() as checkpointer:
-        graph = create_research_graph(checkpointer=checkpointer)
-        
-        state = await graph.aget_state(run_config)
-        if not state or not state.values:
-            raise DeepResearchError(f"未找到 thread_id 对应的检查点：{thread_id}")
-        
-        checkpoint_state = dict(state.values)
-        next_nodes = tuple(state.next)
-        logger.info(f"找到检查点，阶段：{checkpoint_state.get('current_stage', 'unknown')}")
+    async with PersistentRunLease(
+        get_checkpoint_path(), thread_id, ttl_seconds=PERSISTENT_LEASE_TTL_SECONDS
+    ) as lease:
+        async with create_sqlite_checkpointer() as checkpointer:
+            graph = create_research_graph(checkpointer=checkpointer)
 
-        if not next_nodes:
-            adoption_patch = adopt_terminal_lifecycle_patch(checkpoint_state)
-            if adoption_patch:
-                await graph.aupdate_state(run_config, adoption_patch)
-                checkpoint_state.update(adoption_patch)
-            return checkpoint_state
+            state = await graph.aget_state(run_config)
+            if not state or not state.values:
+                raise DeepResearchError(f"未找到 thread_id 对应的检查点：{thread_id}")
 
-        lifecycle_patch = resume_lifecycle_patch(checkpoint_state, next_nodes)
-        if lifecycle_patch:
-            await graph.aupdate_state(run_config, lifecycle_patch)
+            checkpoint_state = dict(state.values)
+            next_nodes = tuple(state.next)
+            logger.info(f"找到检查点，阶段：{checkpoint_state.get('current_stage', 'unknown')}")
 
-        input_state = filter_runtime_owned_input(additional_input) if additional_input else None
-        final_state = await _invoke_with_terminal_lifecycle(
-            graph,
-            input_state or None,
-            run_config,
-            has_checkpointer=True,
-        )
+            # A pending checkpoint cancelled through cancel_research can retain
+            # LangGraph's queued node. Runtime ownership makes it terminal
+            # without rewriting that queue or inventing a Graph route.
+            if checkpoint_state.get("status") == "cancelled":
+                return checkpoint_state
+
+            if not next_nodes:
+                adoption_patch = adopt_terminal_lifecycle_patch(
+                    checkpoint_state, thread_id=thread_id
+                )
+                if adoption_patch:
+                    await graph.aupdate_state(run_config, adoption_patch)
+                    checkpoint_state.update(adoption_patch)
+                return checkpoint_state
+
+            lifecycle_patch = resume_lifecycle_patch(
+                checkpoint_state, next_nodes, thread_id=thread_id
+            )
+            if lifecycle_patch:
+                await graph.aupdate_state(run_config, lifecycle_patch)
+                checkpoint_state.update(lifecycle_patch)
+
+            input_state = filter_runtime_owned_input(additional_input) if additional_input else None
+            final_state = await _invoke_with_terminal_lifecycle(
+                graph,
+                input_state or None,
+                run_config,
+                has_checkpointer=True,
+                execution_context=execution_context_from_state(
+                    checkpoint_state, thread_id=thread_id
+                ),
+            )
+            lease.assert_held()
     
     return final_state
+
+
+async def cancel_research(thread_id: str) -> Dict[str, Any]:
+    """Cancel a paused persistent run without changing Graph routing.
+
+    The contract is cooperative. A caller cancelling an already-running
+    asyncio task must cancel that task itself; this API acquires the same lease
+    and therefore safely terminalizes only a checkpoint with no active runner.
+    """
+
+    run_config = {"configurable": {"thread_id": thread_id}}
+    async with PersistentRunLease(
+        get_checkpoint_path(), thread_id, ttl_seconds=PERSISTENT_LEASE_TTL_SECONDS
+    ):
+        async with create_sqlite_checkpointer() as checkpointer:
+            graph = create_research_graph(checkpointer=checkpointer)
+            state = await graph.aget_state(run_config)
+            if not state or not state.values:
+                raise DeepResearchError(f"未找到 thread_id 对应的检查点：{thread_id}")
+
+            checkpoint_state = dict(state.values)
+            if not state.next or checkpoint_state.get("status") == "cancelled":
+                return checkpoint_state
+
+            lifecycle_patch = resume_lifecycle_patch(
+                checkpoint_state, tuple(state.next), thread_id=thread_id
+            )
+            cancellation_patch: Dict[str, Any] = {
+                key: value
+                for key, value in lifecycle_patch.items()
+                if key in {"run_id", "iteration", "execution_context"}
+            }
+            cancellation_patch.update(cancelled_lifecycle_patch())
+            await graph.aupdate_state(run_config, cancellation_patch)
+            checkpoint_state.update(cancellation_patch)
+            return checkpoint_state
 
 
 async def get_workflow_state(thread_id: str) -> Optional[Dict[str, Any]]:

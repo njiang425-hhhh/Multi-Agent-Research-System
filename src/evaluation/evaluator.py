@@ -8,16 +8,19 @@ from typing import Any
 from src.evaluation.contracts import (
     CoverageEvaluationSummary,
     EvaluationCase,
+    EvaluationDataset,
     EvaluationMetric,
+    EvaluationSnapshot,
     ReportEvaluationSummary,
     RunEvaluationResult,
     TraceEvaluationSummary,
     UsageEvaluationSummary,
 )
+from src.evaluation.snapshot import build_evaluation_snapshot, validate_evaluation_snapshot
 
 
 EXPECTED_COMPLETED_NODES = ("plan", "search", "synthesize", "write_report")
-EVALUATOR_VERSION = "p3.2b.v1"
+EVALUATOR_VERSION = "p4.5.v1"
 _MISSING = object()
 
 
@@ -170,6 +173,9 @@ def evaluate_run(
     case: EvaluationCase | None = None,
     dataset_id: str | None = None,
     dataset_version: str | None = None,
+    dataset: EvaluationDataset | None = None,
+    configuration: Mapping[str, Any] | None = None,
+    evaluation_snapshot: EvaluationSnapshot | None = None,
 ) -> RunEvaluationResult:
     """Evaluate an existing state without writing, invoking agents, or estimating usage."""
     status = _read(state, "status", _MISSING)
@@ -203,10 +209,27 @@ def evaluate_run(
         outcome = "failed"
     else:
         outcome = "passed"
+    snapshot_args = {
+        "evaluator_version": EVALUATOR_VERSION,
+        "dataset_id": dataset_id,
+        "dataset_version": dataset_version,
+        "dataset": dataset,
+        "case": case,
+        "expected_completed_nodes": EXPECTED_COMPLETED_NODES,
+        "configuration": configuration,
+    }
+    snapshot = (
+        validate_evaluation_snapshot(evaluation_snapshot, **snapshot_args)
+        if evaluation_snapshot is not None
+        else build_evaluation_snapshot(**snapshot_args)
+    )
+    resolved_dataset_id = dataset.dataset_id if dataset is not None else dataset_id
+    resolved_dataset_version = dataset.version if dataset is not None else dataset_version
     return RunEvaluationResult(
         evaluator_version=EVALUATOR_VERSION,
-        dataset_id=dataset_id,
-        dataset_version=dataset_version,
+        evaluation_snapshot=snapshot,
+        dataset_id=resolved_dataset_id,
+        dataset_version=resolved_dataset_version,
         case_id=case.case_id if case else None,
         query=case.query if case else str(_read(state, "query", _read(state, "research_topic", "")) or ""),
         run_id=_read(state, "run_id", None) or None,
