@@ -11,6 +11,7 @@ from src.evaluation.contracts import (
     EvaluationDataset,
     OfflineEvaluationResult,
     OfflineEvaluationSummary,
+    RegressionEvaluationSummary,
 )
 from src.evaluation.dataset import FIXED_EVALUATION_DATASET
 from src.evaluation.evaluator import EVALUATOR_VERSION, evaluate_run
@@ -19,6 +20,46 @@ from src.evaluation.snapshot import build_evaluation_snapshot
 
 
 CaseRunner = Callable[[EvaluationCase], Any | Awaitable[Any]]
+_QUALITY_METRIC_NAMES = ("source_coverage", "grounded_citation", "report_completeness")
+
+
+def _regression_summary(dataset: EvaluationDataset, results: list) -> RegressionEvaluationSummary:
+    """Apply fixed suite thresholds to evaluation output without changing any run."""
+
+    if not results:
+        return RegressionEvaluationSummary(status="unavailable")
+    expected_matches = sum(
+        result.outcome == case.expected_outcome for case, result in zip(dataset.cases, results)
+    )
+    expected_match_rate = expected_matches / len(results)
+    quality_pairs = [
+        (case, result)
+        for case, result in zip(dataset.cases, results)
+        if case.scenario != "failure"
+    ]
+    rates: dict[str, float] = {}
+    for name in _QUALITY_METRIC_NAMES:
+        passed = sum(
+            1
+            for _, result in quality_pairs
+            if next(metric.status for metric in result.metrics if metric.name == name) == "passed"
+        )
+        rates[name] = passed / len(quality_pairs) if quality_pairs else 0.0
+
+    thresholds = dataset.regression_thresholds
+    failed_thresholds: list[str] = []
+    if expected_match_rate < thresholds.min_expected_outcome_match_rate:
+        failed_thresholds.append("min_expected_outcome_match_rate")
+    for name, rate in rates.items():
+        if rate < thresholds.min_quality_metric_pass_rate:
+            failed_thresholds.append(f"min_quality_metric_pass_rate:{name}")
+    return RegressionEvaluationSummary(
+        status="failed" if failed_thresholds else "passed",
+        expected_outcome_match_rate=expected_match_rate,
+        quality_metric_pass_rates=rates,
+        quality_case_count=len(quality_pairs),
+        failed_thresholds=failed_thresholds,
+    )
 
 
 async def run_offline_evaluation(
@@ -75,5 +116,6 @@ async def run_offline_evaluation(
             unavailable_cases=counts["unavailable"],
             metric_status_counts=metric_counts,
         ),
+        regression=_regression_summary(dataset, results),
         configuration=dict(configuration or {}),
     )

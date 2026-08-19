@@ -10,13 +10,31 @@ from pydantic import BaseModel, Field
 
 MetricStatus = Literal["passed", "failed", "unavailable"]
 EvaluationOutcome = Literal["passed", "failed", "unavailable"]
+EvaluationScenario = Literal["success", "partial", "failure"]
+
+
+class ResearchQualityRubric(BaseModel):
+    """Case-level, deterministic minimums for observable research quality."""
+
+    min_distinct_sources: int = Field(default=1, ge=0)
+    min_grounded_citations: int = Field(default=1, ge=0)
+    min_report_sections: int = Field(default=1, ge=0)
+    min_report_characters: int = Field(default=1, ge=0)
+    require_top_level_heading: bool = True
+
+
+class RegressionThresholds(BaseModel):
+    """Suite thresholds evaluated from already-produced offline results only."""
+
+    min_expected_outcome_match_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    min_quality_metric_pass_rate: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class EvaluationSnapshot(BaseModel):
     """Versioned, deterministic basis for one comparable evaluation result."""
 
-    snapshot_version: str = "p4.5.v1"
-    evaluator_version: str = "p4.5.v1"
+    snapshot_version: str = "p5.1.v1"
+    evaluator_version: str = "p5.1.v1"
     dataset_id: str | None = None
     dataset_version: str | None = None
     dataset_content_fingerprint: str | None = None
@@ -33,14 +51,18 @@ class EvaluationCase(BaseModel):
     query: str = Field(min_length=1)
     description: str = ""
     tags: list[str] = Field(default_factory=list)
+    scenario: EvaluationScenario = "success"
+    expected_outcome: EvaluationOutcome = "passed"
+    quality_rubric: ResearchQualityRubric = Field(default_factory=ResearchQualityRubric)
 
 
 class EvaluationDataset(BaseModel):
-    """A stable collection of cases; this contains no reference answers."""
+    """A stable collection of cases with observable quality expectations."""
 
     dataset_id: str = Field(min_length=1)
     version: str = Field(min_length=1)
     cases: list[EvaluationCase] = Field(default_factory=list)
+    regression_thresholds: RegressionThresholds = Field(default_factory=RegressionThresholds)
 
 
 class EvaluationMetric(BaseModel):
@@ -90,11 +112,22 @@ class ReportEvaluationSummary(BaseModel):
     section_count: int = 0
 
 
+class ResearchQualitySummary(BaseModel):
+    """Read-only inputs used by the P5.1 quality rubric metrics."""
+
+    rubric: ResearchQualityRubric = Field(default_factory=ResearchQualityRubric)
+    distinct_source_count: int = 0
+    cited_source_count: int = 0
+    grounded_citation_count: int = 0
+    ungrounded_citation_count: int = 0
+    report_character_count: int = 0
+
+
 class RunEvaluationResult(BaseModel):
     """Evaluation of one already-produced run state; never a State patch."""
 
     evaluation_id: str = Field(default_factory=lambda: str(uuid4()))
-    evaluator_version: str = "p3.2b.v1"
+    evaluator_version: str = "p5.1.v1"
     evaluation_snapshot: EvaluationSnapshot | None = None
     dataset_id: str | None = None
     dataset_version: str | None = None
@@ -107,6 +140,7 @@ class RunEvaluationResult(BaseModel):
     usage: UsageEvaluationSummary = Field(default_factory=UsageEvaluationSummary)
     coverage: CoverageEvaluationSummary = Field(default_factory=CoverageEvaluationSummary)
     report: ReportEvaluationSummary = Field(default_factory=ReportEvaluationSummary)
+    quality: ResearchQualitySummary = Field(default_factory=ResearchQualitySummary)
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -119,13 +153,24 @@ class OfflineEvaluationSummary(BaseModel):
     metric_status_counts: dict[str, int] = Field(default_factory=dict)
 
 
+class RegressionEvaluationSummary(BaseModel):
+    """Deterministic regression-gate result; never a production control signal."""
+
+    status: MetricStatus = "unavailable"
+    expected_outcome_match_rate: float = 0.0
+    quality_metric_pass_rates: dict[str, float] = Field(default_factory=dict)
+    quality_case_count: int = 0
+    failed_thresholds: list[str] = Field(default_factory=list)
+
+
 class OfflineEvaluationResult(BaseModel):
     """Serializable suite-level result suitable for later comparison."""
 
-    evaluator_version: str = "p3.2b.v1"
+    evaluator_version: str = "p5.1.v1"
     evaluation_snapshot: EvaluationSnapshot | None = None
     dataset_id: str
     dataset_version: str
     results: list[RunEvaluationResult] = Field(default_factory=list)
     summary: OfflineEvaluationSummary = Field(default_factory=OfflineEvaluationSummary)
+    regression: RegressionEvaluationSummary = Field(default_factory=RegressionEvaluationSummary)
     configuration: dict[str, Any] = Field(default_factory=dict)

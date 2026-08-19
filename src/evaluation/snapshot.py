@@ -9,13 +9,16 @@ from typing import Any, Mapping, Sequence
 from src.evaluation.contracts import EvaluationCase, EvaluationDataset, EvaluationSnapshot
 
 
-EVALUATION_SNAPSHOT_VERSION = "p4.5.v1"
+EVALUATION_SNAPSHOT_VERSION = "p5.1.v1"
 EVALUATION_METRIC_NAMES = (
     "run_completion",
     "trace_completeness",
     "usage_integrity",
     "research_coverage",
     "report_structure",
+    "source_coverage",
+    "grounded_citation",
+    "report_completeness",
     "failure_signals",
 )
 _SENSITIVE_CONFIGURATION_KEYS = frozenset(

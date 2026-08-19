@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 from typing import Any
 
 from src.evaluation.contracts import (
@@ -11,6 +12,8 @@ from src.evaluation.contracts import (
     EvaluationDataset,
     EvaluationMetric,
     EvaluationSnapshot,
+    ResearchQualityRubric,
+    ResearchQualitySummary,
     ReportEvaluationSummary,
     RunEvaluationResult,
     TraceEvaluationSummary,
@@ -20,8 +23,9 @@ from src.evaluation.snapshot import build_evaluation_snapshot, validate_evaluati
 
 
 EXPECTED_COMPLETED_NODES = ("plan", "search", "synthesize", "write_report")
-EVALUATOR_VERSION = "p4.5.v1"
+EVALUATOR_VERSION = "p5.1.v1"
 _MISSING = object()
+_URL_PATTERN = re.compile(r"https?://[^\s<>\]\)]+")
 
 
 def _read(value: Any, field: str, default: Any = _MISSING) -> Any:
@@ -167,6 +171,131 @@ def _report_summary(state: Any, completed: bool) -> tuple[ReportEvaluationSummar
     return summary, _metric("report_structure", "passed", value=summary.model_dump())
 
 
+def _source_urls(values: list[Any] | tuple[Any, ...] | None) -> set[str]:
+    """Return a stable, exact URL set without fetching or canonicalizing sources."""
+
+    urls: set[str] = set()
+    for value in values or ():
+        text = str(value or "").strip()
+        if text.startswith(("http://", "https://")):
+            urls.add(text.rstrip(".,;"))
+        urls.update(match.rstrip(".,;") for match in _URL_PATTERN.findall(text))
+    return urls
+
+
+def _report_cited_urls(state: Any, report: Any, final_report: Any) -> set[str]:
+    sections = _list(state, "report_sections")
+    if sections is None and report is not _MISSING:
+        sections = _list(report, "sections")
+    values: list[Any] = []
+    for section in sections or ():
+        section_sources = _list(section, "sources")
+        if section_sources is not None:
+            values.extend(section_sources)
+    if report is not _MISSING:
+        report_citations = _list(report, "citations")
+        if report_citations is not None:
+            values.extend(report_citations)
+    if final_report is not _MISSING:
+        values.append(final_report)
+    return _source_urls(values)
+
+
+def _quality_metrics(
+    state: Any,
+    case: EvaluationCase | None,
+    report_summary: ReportEvaluationSummary,
+) -> tuple[ResearchQualitySummary, list[EvaluationMetric]]:
+    """Score only observable State/report fields against a case's fixed rubric."""
+
+    rubric = case.quality_rubric if case is not None else ResearchQualityRubric()
+    documents = _list(state, "documents")
+    evidence = _list(state, "evidence")
+    report = _read(state, "report", _MISSING)
+    final_report = _read(state, "final_report", _MISSING)
+    document_urls = _source_urls([_read(document, "uri", "") for document in documents or ()])
+    document_urls_by_id = {
+        str(_read(document, "document_id", "")): str(_read(document, "uri", "")).strip()
+        for document in documents or ()
+        if _read(document, "document_id", "") and _read(document, "uri", "")
+    }
+    cited_urls = _report_cited_urls(state, report, final_report)
+    grounded_urls = _source_urls(
+        [
+            _read(item, "source_url", "")
+            for item in evidence or ()
+            if _read(item, "status", "grounded") in {"grounded", "partial"}
+            and bool(_read(item, "evidence_id", ""))
+            and bool(_read(item, "source_quote", ""))
+            and _read(item, "source_url", "")
+            == document_urls_by_id.get(str(_read(item, "document_id", "")))
+        ]
+    )
+    grounded_citations = cited_urls & grounded_urls
+    ungrounded_citations = cited_urls - grounded_urls
+    summary = ResearchQualitySummary(
+        rubric=rubric,
+        distinct_source_count=len(document_urls),
+        cited_source_count=len(cited_urls),
+        grounded_citation_count=len(grounded_citations),
+        ungrounded_citation_count=len(ungrounded_citations),
+        report_character_count=len(str(final_report or "")) if final_report is not _MISSING else 0,
+    )
+
+    if documents is None:
+        source_metric = _metric(
+            "source_coverage", "unavailable", value=summary.model_dump(),
+            reason="documents are absent from this result",
+        )
+    elif summary.distinct_source_count < rubric.min_distinct_sources:
+        source_metric = _metric(
+            "source_coverage", "failed", value=summary.model_dump(),
+            reason="distinct document sources are below the case minimum",
+        )
+    else:
+        source_metric = _metric("source_coverage", "passed", value=summary.model_dump())
+
+    if evidence is None:
+        citation_metric = _metric(
+            "grounded_citation", "unavailable", value=summary.model_dump(),
+            reason="evidence is absent; grounded citations cannot be established",
+        )
+    elif final_report is _MISSING:
+        citation_metric = _metric(
+            "grounded_citation", "unavailable", value=summary.model_dump(),
+            reason="report fields are absent; report citations cannot be established",
+        )
+    elif (
+        summary.grounded_citation_count < rubric.min_grounded_citations
+        or summary.ungrounded_citation_count > 0
+    ):
+        citation_metric = _metric(
+            "grounded_citation", "failed", value=summary.model_dump(),
+            reason="report citations are ungrounded or below the case minimum",
+        )
+    else:
+        citation_metric = _metric("grounded_citation", "passed", value=summary.model_dump())
+
+    if final_report is _MISSING:
+        completeness_metric = _metric(
+            "report_completeness", "unavailable", value=summary.model_dump(),
+            reason="report fields are absent from this result",
+        )
+    elif (
+        not report_summary.generated
+        or (rubric.require_top_level_heading and not report_summary.has_heading)
+        or report_summary.section_count < rubric.min_report_sections
+        or summary.report_character_count < rubric.min_report_characters
+    ):
+        completeness_metric = _metric(
+            "report_completeness", "failed", value=summary.model_dump(),
+            reason="report content, heading, sections, or length are below the case minimum",
+        )
+    else:
+        completeness_metric = _metric("report_completeness", "passed", value=summary.model_dump())
+    return summary, [source_metric, citation_metric, completeness_metric]
+
+
 def evaluate_run(
     state: Any,
     *,
@@ -197,12 +326,21 @@ def evaluate_run(
     usage, usage_metric = _usage_summary(state)
     coverage, coverage_metric = _coverage_summary(state, completed)
     report, report_metric = _report_summary(state, completed)
+    quality, quality_metrics = _quality_metrics(state, case, report)
     failure_metric = _metric(
         "failure_signals",
         "failed" if error or trace.failed_event_count else "passed",
         value={"error": error, "failed_trace_events": trace.failed_event_count},
     )
-    metrics = [lifecycle_metric, trace_metric, usage_metric, coverage_metric, report_metric, failure_metric]
+    metrics = [
+        lifecycle_metric,
+        trace_metric,
+        usage_metric,
+        coverage_metric,
+        report_metric,
+        *quality_metrics,
+        failure_metric,
+    ]
     if lifecycle_metric.status == "unavailable":
         outcome = "unavailable"
     elif any(metric.status == "failed" for metric in metrics):
@@ -239,6 +377,7 @@ def evaluate_run(
         usage=usage,
         coverage=coverage,
         report=report,
+        quality=quality,
         error=str(error) if error else None,
         metadata={"llm_as_judge": False, "reads_existing_state_only": True},
     )

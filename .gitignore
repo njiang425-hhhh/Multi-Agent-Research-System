@@ -22,3 +22,5 @@ venv/
 .chainlit/
 .files/
 outputs/
+artifacts/*.out
+artifacts/*.err
