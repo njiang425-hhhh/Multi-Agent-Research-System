@@ -2,13 +2,13 @@
 
 > 本文是新会话的唯一交接基线；与历史 handoff、提交记录或旧测试结论冲突时，以当前源码和本文为准。
 >
-> 最后更新：2026-08-19 · P0–P5 formally closed（含完整 P5.3 真实三模式重跑与 closure review）· P4 COMPLETE / formally closed · 工作区仍含未提交实现。
+> 最后更新：2026-08-20 · P0–P5 formally closed；P6 formally closed（deterministic calibration、two-round real repeatability 与 closure review）；工作区仍含未提交实现。
 
 ## 当前基线
 
 - **Graph V1 保持不变**：`Planner -> Searcher -> Synthesizer -> Writer`；现有 router、Writer 输入和 legacy 主链均不变。
 - **P0–P5 formally closed**：完成显式 State 双写、Evidence sidecar、lifecycle/checkpoint/lease、统一 execution policy/provider、LLM attempt accounting、Trace/Evaluation governance，以及 Research Quality / Evidence Value / Real Workload & SLO Baseline；P5 的目标是建立决策基线，不是改变生产策略。
-- **验证基线**：fake-only 全量 **264 passed，2 个既有 Pydantic deprecation warnings**。CI 使用 Python 3.11 和固定 pytest `--basetemp`，真实 API 集成验证不进入 CI。
+- **验证基线**：fake-only 全量 **268 passed，2 个既有 Pydantic deprecation warnings**。CI 使用 Python 3.11 和固定 pytest `--basetemp`，真实 API 集成验证不进入 CI。
 - 默认运行组合：DeepSeek + Tavily + `deterministic_v2`。`legacy_agent` 仅为显式兼容模式；`EVIDENCE_ANALYZER_ENABLED=false` 仍是默认值。
 
 | 阶段 | 状态 | 已交付能力 |
@@ -20,6 +20,10 @@
 | P5.2 | COMPLETE | 同一 cases/rubric 的 Evidence disabled/enabled/partial fake benchmark；质量、adoption、usage/latency 及 per-case/tag delta；只读、fake-injected。 |
 | P5.3 | COMPLETE | 独立手工 DeepSeek + Tavily harness、observed/derived JSON+Markdown archive、SLO/reliability/overhead summary；不进 CI。 |
 | P5 closure review | FORMALLY CLOSED | 基于完整真实归档作有限推断：不默认/选择性启用 Evidence，不启动 Writer、provider resilience 或 Graph V2 架构项目。 |
+| P6.1 | COMPLETE | 独立版本化、reference-backed 的 deterministic rubric calibration；reference expectation/rationale 与内容一起 fingerprint。 |
+| P6.2 | COMPLETE | 注入式多轮 repeatability harness、per-run observed record、derived aggregate/dispersion、跨轮 matched comparison 与仅供评审的 initiative assessment；fake-only CI 覆盖。 |
+| P6.3 | COMPLETE | P5.3 完整归档兼容地纳入 Round 1；完成一轮独立真实 Round 2，执行 two-round closure review。Round 3 按预声明 stopping rule 不执行。 |
+| P6 closure review | FORMALLY CLOSED | 两轮真实样本已足以否定当前 initiative evidence sufficiency；不进入 Evidence selector、Writer optimization、provider resilience 或 Graph V2。 |
 
 ## 当前架构与 ownership
 
@@ -41,7 +45,7 @@ CLI / Chainlit
 | Search / Provider | SearchExecutor 顺序执行、局部 search/extract 限制；Provider 只负责 transport、typed error、retryable/Retry-After。 |
 | Evidence | optional sidecar、strict unique grounding、diagnostics；失败不得改顶层 error、router 或 Writer。 |
 | Trace | logical append-only，checkpoint 物理 retention/compaction；不计 usage、不参与路由。 |
-| Evaluation | 离线、确定性、只读；snapshot 绑定 evaluator、配置与实际 dataset/case 内容。P5.1 对 source coverage、grounded citation、report completeness 应用 case-level 阈值；P5.2 对同一 cases 输出 Evidence mode value comparison；P5.3 归档真实手工 workload 的 observed/derived 数据。三者均不进入生产路由。 |
+| Evaluation | 离线、确定性、只读；snapshot 绑定 evaluator、配置与实际 dataset/case 内容。P5.1 对 source coverage、grounded citation、report completeness 应用 case-level 阈值；P5.2 对同一 cases 输出 Evidence mode value comparison；P5.3 归档真实手工 workload 的 observed/derived 数据；P6.1 校准固定 reference oracle，P6.2 聚合重复运行。`grounded_citation` 仅是 URL/provenance grounding，不证明事实正确性或语义蕴含。均不进入生产路由。 |
 
 ### 必须保持的 invariants
 
@@ -101,9 +105,44 @@ P5 的交付目标（确定性 quality baseline、fake-only value benchmark、�
 3. **Writer performance 不立项。** 0.602–0.671 的 Writer/total 与 354–379s p95 是真实 **observed profile**，足以作为后续采样指标；没有用户 SLO、重复运行或 section correctness/partial-composition 契约，不满足 bounded concurrency 或 partial composition 的启动条件。
 4. **provider resilience 不立项；Graph V2 不立项。** provider errors 和 partial diagnostics 证明 failure isolation 被观测到，但没有第二 provider、availability SLO、健康选择规则或重复失败分布。也没有任何要求 reflection、supervisor routing、并行 branch/join 的业务控制流证据；现有 Graph V1 不变。
 
-#### P6 recommended priority — Evaluation calibration & repeatability（未启动）
+#### P6.1–P6.2 COMPLETE — Evaluation calibration & repeatability harness
 
-**唯一推荐优先级：Evaluation calibration & repeatability。** 先在不改变 Graph V1、router、Writer 输入、runtime/evidence ownership 或生产默认值的前提下，定义 reference-backed quality calibration，并对同一代表性 workload 做独立重复真实采样。它直接检验 P5 中唯一尚不稳定的推断（grounded-citation quality gain、tag-specific benefit、Writer/total 和 provider-error 分布），为随后任何 Evidence selector、性能优化或 resilience 项目提供可重复证据；当前不实施这些项目。
+- `src/evaluation/calibration_dataset.py` 定义与 P5 workload 完全分离的 `researchos_quality_calibration` v1：完整 provenance/structure、来源不足、未 grounded 报告 URL、结构不完整四类 reference-backed fixtures。每例的 reference source、expected signal/count 和 rationale 都进入 `calibration_content_fingerprint`；任何内容变化都会改变 calibration 及 evaluator snapshot identity。
+- `run_rubric_calibration` 只读取由调用方注入的 State-like fixture，并复用既有 evaluator 比较三项 metric 和可观察计数；输出 alignment，不写 State、不构造 Graph/provider/LLM，也不改变 P5 dataset 或 regression threshold。这里的 `grounded_citation` 明确仅验证 report URL 与有有效 Evidence 的 source URL 的 provenance 对齐，**不**验证事实正确性、claim support 或 semantic entailment。
+- `run_repeatability_benchmark` 顺序调用既有注入式 P5.3 runner；每轮将完整 P5.3 result 保存为 `observed_runs`（嵌套 P5.3 继续自身 observed/derived 分界），并把 mode-level quality、wall latency、p95、Writer share/node latency、Evidence adoption、provider-error rate 的 count/mean/min/max/sample SD/CV 输出到 `derived_metrics`。
+- 对 enabled/partial 的 Evidence value，P6.2 汇总每轮 P5.3 quality delta 和 observed wall delta；只有同一轮、同一 non-failure case 且 disabled/目标 mode 均 completed 的 pair 才进入跨轮 matched comparison。结果明确输出 matched-success rate、quality/grounded-citation/wall-time delta 的 dispersion 与 repeated-benefit rate；没有 pair 即为 unavailable/inconclusive，不作收益推断。
+- `RepeatabilityDecisionCriteria` 仅生成 `InitiativeEvidenceAssessment`，从不修改生产配置、Evidence 开关、Graph 或 provider policy。Evidence selector 的充分证据要求至少 3 轮、same-case positive provenance delta 的 repeated/matched-success 稳定性以及无过度 provider-error 回退；Writer 与 provider resilience 分别还要求显式的 latency / error-rate SLO，缺失时标为 `not_assessable`。`sufficient` 仅表示可进入后续人工立项评审，不自动开始优化、selector、fallback 或 Graph V2。
+- `scripts/run_repeatability_benchmark.py --rounds 3` 是 P6.3 手工 DeepSeek + Tavily 入口，cache disabled、`ci: false`，归档 JSON 与 Markdown；CI 仅运行 deterministic fake runner 测试。
+
+#### P6.3 two-round closure review — FORMALLY CLOSED
+
+Round 1 使用 P5.3 的完整真实归档 `artifacts/real-workload-benchmarks/20260819T042430Z/benchmark.json`；它可无转换解析为当前 `RealWorkloadBenchmarkResult`，与 Round 2 的 `artifacts/p6-repeatability-rounds/20260820T042404Z/benchmark.json` 具有相同的 dataset（`researchos_offline_baseline` v2）、mode 顺序（disabled/enabled/partial）、cache-disabled、DeepSeek + Tavily 手工执行配置和 observed/derived 合同。因此两轮是可比较的真实样本。以下数值均为 archive 中的 observed data 或由其得到的 derived metric，不能视为生产策略。
+
+| 信号 | Enabled：Round 1 → Round 2 | Partial：Round 1 → Round 2 |
+|---|---|---|
+| grounded-citation pass-rate delta | +0.200 → +0.200 | +0.200 → 0.000 |
+| overall quality pass rate | 0.167 → 0.167 | 0.333 → 0.000 |
+| benefited case/tag | `ai-regulation-overview` / `policy, comparison` → `coastal-adaptation-partial-evidence` / `climate, evidence, partial` | `ai-regulation-overview` / `policy, comparison` → none |
+| matched-success cases | 4 → 5 | 5 → 4 |
+| observed wall-latency overhead | +266.679s → +33.951s | +125.747s → +114.929s |
+| Writer/total | 0.602 → 0.592 | 0.642 → 0.602 |
+| mode p50 / p95 | 291.394 / 378.542s → 282.525 / 327.403s | 305.003 / 354.473s → 325.196 / 400.880s |
+| provider-error rate | 0.667 → 0.500 | 0.667 → 0.667 |
+
+Provider-error 的 operation/case 分布同样不稳定：enabled 的 `analyze_document` LLM errors 从 7 次变为 6 次，受影响 case 从 `ai-regulation / clinical / search-provider-failure` 变为 `ai-regulation / clinical / urban-climate`；partial 的 `analyze_document` errors 从 7 次变为 5 次且受影响 case 改变，Round 2 还出现了 `plan` 与 run-level error。Writer/total 在两轮中仍处于 0.592–0.691 的 observed 区间，但没有用户定义的 latency SLO 或 section-correctness/partial-composition contract，不能解释为优化项目证据。
+
+这里的 `grounded_citation` **仅**代表报告 URL 与有效 Evidence source URL 的 provenance/URL grounding；它不代表事实正确性、claim support 或 semantic entailment。因此 enabled 的两轮 +0.200 不能被提升为“Evidence 已稳定提升报告真实性”的结论。
+
+**停止 Round 3 的理由：** 两轮已经出现 benefited case/tag 转移或消失、partial 的 grounded-citation delta 消失、quality outcome 下滑、matched population 与 provider-error distribution 变化。它们足以否定当前 initiative 的 evidence-sufficiency；继续采样可能描述更多波动，但不会改变当前“不足以立项”的决策，故不为满足 `>=3` 的 sufficient gate 而强制执行 Round 3。
+
+结论仅限当前证据：
+
+1. **Evidence selector：insufficient。** 没有同一 case/tag 的重复稳定受益，也没有稳定的 partial 增益；这不表示 Evidence 永久无价值。
+2. **Writer optimization：not_assessable。** profile 可供未来观测，但缺用户 SLO，且没有质量/section 契约，不能立项。
+3. **Provider resilience：insufficient / not_assessable。** 缺 availability/error-rate SLO 与可行动的 provider taxonomy，且错误 operation/case 分布不稳定；不得据此实现 fallback/circuit。
+4. **P6 可以正式关闭。** P6.1 calibration、P6.2 harness 和两轮可比较真实采样已完成，并已依据预声明 stopping rule 作出非自动化 closure judgement；不需 Round 3。
+
+**下一阶段唯一推荐方向：Evaluation measurement-contract governance。** 在任何 Evidence/Writer/provider 产品项目之前，先通过单独评审定义用户 SLO、provider error taxonomy、reference-answer/claim-support 的评价边界与采样停止规则；该方向不改变生产控制流或默认策略。
 
 ### 中期 — 只在触发条件满足时实施的能力
 
@@ -138,8 +177,7 @@ P5 的交付目标（确定性 quality baseline、fake-only value benchmark、�
 - Pydantic/msgpack Async SQLite serialization warnings 与跨版本 checkpoint 策略。
 - router early termination 后的 callback/UI 展示一致性。
 - `legacy_agent` 的最终退役或受限再接入方案。
-- P6（未启动）：Evaluation calibration & repeatability；reference-backed rubric、独立真实重复采样与人工评审，不把单次 P5.3 observed data 直接变为生产策略。
-- 更丰富的 reference answers、真实 workload/SLO 分层与评价治理流程。
+- 后续唯一推荐：Evaluation measurement-contract governance（用户 SLO、provider error taxonomy、reference-answer/claim-support 边界与采样 stopping rule）；不得把 P5/P6 observed data 直接变为生产策略。
 
 ## 下一会话启动
 
