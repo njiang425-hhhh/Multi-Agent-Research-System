@@ -1,183 +1,268 @@
-# ResearchOS / Multi-Agent Research System — Handoff
+# ResearchOS / 多智能体研究系统 - 交接基线
 
-> 本文是新会话的唯一交接基线；与历史 handoff、提交记录或旧测试结论冲突时，以当前源码和本文为准。
+> 本文是下一会话唯一交接基线；若与历史 handoff、提交记录或旧测试结论冲突，以当前源码和本文为准。
 >
-> 最后更新：2026-08-20 · P0–P5 formally closed；P6 formally closed（deterministic calibration、two-round real repeatability 与 closure review）；工作区仍含未提交实现。
+> 最后更新：2026-08-21。P0-P9 已正式关闭；工作区仍含未提交 P7/P8/P9 实现。P10 Research Coverage 仅为待评审候选，尚未批准。
 
-## 当前基线
+## 目录
 
-- **Graph V1 保持不变**：`Planner -> Searcher -> Synthesizer -> Writer`；现有 router、Writer 输入和 legacy 主链均不变。
-- **P0–P5 formally closed**：完成显式 State 双写、Evidence sidecar、lifecycle/checkpoint/lease、统一 execution policy/provider、LLM attempt accounting、Trace/Evaluation governance，以及 Research Quality / Evidence Value / Real Workload & SLO Baseline；P5 的目标是建立决策基线，不是改变生产策略。
-- **验证基线**：fake-only 全量 **268 passed，2 个既有 Pydantic deprecation warnings**。CI 使用 Python 3.11 和固定 pytest `--basetemp`，真实 API 集成验证不进入 CI。
-- 默认运行组合：DeepSeek + Tavily + `deterministic_v2`。`legacy_agent` 仅为显式兼容模式；`EVIDENCE_ANALYZER_ENABLED=false` 仍是默认值。
+1. Project Snapshot（项目快照）
+2. Current Architecture（当前架构）
+3. End-to-End Research Flow（端到端研究流程）
+4. Core Data Flow / Agent I/O（核心数据流与 Agent I/O）
+5. Capability Status Matrix（能力状态矩阵）
+6. Current Decision Point（当前决策点）
+7. Development Guardrails / DO NOT BREAK（开发护栏）
+8. P0-P9 Milestone Map（里程碑地图）
+9. Detailed History / Appendix（详细历史与附录）
+10. Graph V2 启动条件、长期演进方向与下一会话启动
 
-| 阶段 | 状态 | 已交付能力 |
-|---|---|---|
-| P0–P2 | COMPLETE | State/V1 显式双写、LLM/Search 基础、Evidence 保护性 sidecar。 |
-| P3 | COMPLETE | run identity、terminal lifecycle、checkpoint/resume/cache replay、Trace、只读 Offline Evaluation。 |
-| P4.1–P4.5 | COMPLETE | persisted runtime policy/lease、统一 deadline/budget/retry、Provider contract、LLM execution、Writer profile、Trace retention/redaction、content-bound Evaluation snapshot。 |
-| P5.1 | COMPLETE | 6 个代表性 offline cases（success/partial/failure）、case-level quality rubric、deterministic regression gate；只读、fake-injected。 |
-| P5.2 | COMPLETE | 同一 cases/rubric 的 Evidence disabled/enabled/partial fake benchmark；质量、adoption、usage/latency 及 per-case/tag delta；只读、fake-injected。 |
-| P5.3 | COMPLETE | 独立手工 DeepSeek + Tavily harness、observed/derived JSON+Markdown archive、SLO/reliability/overhead summary；不进 CI。 |
-| P5 closure review | FORMALLY CLOSED | 基于完整真实归档作有限推断：不默认/选择性启用 Evidence，不启动 Writer、provider resilience 或 Graph V2 架构项目。 |
-| P6.1 | COMPLETE | 独立版本化、reference-backed 的 deterministic rubric calibration；reference expectation/rationale 与内容一起 fingerprint。 |
-| P6.2 | COMPLETE | 注入式多轮 repeatability harness、per-run observed record、derived aggregate/dispersion、跨轮 matched comparison 与仅供评审的 initiative assessment；fake-only CI 覆盖。 |
-| P6.3 | COMPLETE | P5.3 完整归档兼容地纳入 Round 1；完成一轮独立真实 Round 2，执行 two-round closure review。Round 3 按预声明 stopping rule 不执行。 |
-| P6 closure review | FORMALLY CLOSED | 两轮真实样本已足以否定当前 initiative evidence sufficiency；不进入 Evidence selector、Writer optimization、provider resilience 或 Graph V2。 |
+## Project Snapshot
 
-## 当前架构与 ownership
+| 项目 | 当前事实 |
+|---|---|
+| 产品目标 | 面向来源的研究 Agent：把用户 Query 转为结构化计划、搜索来源、综合 Findings 和带引用的 Report，同时保持 runtime、provenance 与 Evaluation 边界。 |
+| 当前阶段 | P0-P9 已正式关闭；系统保持 Graph V1。P10 Research Coverage 只是 **candidate/review**，未批准、未设计、未实现。 |
+| Graph | 固定线性 Graph V1：`Planner -> Searcher -> Synthesizer -> Writer`。现有 router、Writer 输入、legacy 主链和 Report contract 不变。 |
+| Provider / Search | 当前默认运行组合：DeepSeek + Tavily + `deterministic_v2`。`SearchExecutor` 拥有确定性顺序 search/extract；`legacy_agent` 仅显式兼容。 |
+| 默认开关 | `EVIDENCE_ANALYZER_ENABLED=false`；`RESEARCH_MEMORY_ENABLED=false`；`WRITER_SECTION_EXECUTION_MODE=serial`。Writer `bounded` 需显式开启，实验 bound 默认 `2`。 |
+| 测试基线 | fake-only 全量：**282 passed，2 个既有 Pydantic deprecation warnings**。CI 使用 Python 3.11 与固定 pytest `--basetemp`；真实 provider 验证仅手工执行，不进 CI。 |
+| 当前决策 | 不改生产默认或控制流。先评审 P10 是否有明确用户问题、可重复指标和 Graph V1 内最小范围，才可授权实施。 |
+
+## Current Architecture
 
 ```text
-CLI / Chainlit
-  -> Graph V1
-       Planner -> Searcher -> Synthesizer -> Writer
-                    |             |
-                    |             +-> legacy findings + optional Evidence sidecar
-                    +-> deterministic_v2 (default) -> SearchExecutor -> Provider/Tools
-                    +-> legacy_agent (explicit compatibility only)
+CLI / Chainlit / Runner
+        |
+        +-- run identity、checkpoint / resume / cache replay、terminal lifecycle
+        v
+   Graph V1（固定线性 router）
+        |
+        +--> Planner ------------------- ResearchPlan
+        |      |                              |
+        |      |                              +--> objectives / search queries / report outline
+        |      +-- 可选 P8 Memory prior context（bounded，默认关闭）
+        |
+        +--> Searcher ------------------ SearchResults + Documents
+        |      |
+        |      +--> deterministic_v2 SearchExecutor --> Provider / Tools（DeepSeek/Tavily）
+        |      +--> 可选 Memory provenance `site:<host>` hints（仍经 SearchExecutor）
+        |
+        +--> Synthesizer --------------- Findings + 可选 Evidence sidecar
+        |      |
+        |      +--> compatibility findings 优先；Evidence failure 仅 diagnostics
+        |
+        +--> Writer -------------------- Report / sections / citations
+               |
+               +--> 默认 serial；bounded section scheduling 仅实验模式
+
+Cross-cutting：
+  Runtime & Execution：shared deadline、operation budget、retry、cancel、lease、terminal reason、at-least-once
+  Trace：append-only logical trace；checkpoint retention / compaction；不参与 usage 或路由
+  Usage：LLM/tool attempts 与 tokens；每个真实 attempt 仅计一次
+  Evaluation：offline、deterministic、read-only snapshot 与 benchmark archive
+  Memory：本地 SQLite、source-backed records、仅 completed run 后 best-effort write
 ```
 
-| 边界 | 当前 ownership |
+### Ownership Boundaries
+
+| 边界 | Owner 与规则 |
 |---|---|
-| Graph | 固定拓扑、既有 router、runner/checkpoint 入口；不承载业务 retry 或新能力编排。 |
-| State / Agent | Agent 生成业务 patch；legacy/V1 字段只能显式双写，不做 alias、自动 hydration 或隐式同步。 |
-| Runtime / Execution | Runtime 拥有 global deadline、operation budget、terminal reason、lease、cancel/resume 的 at-least-once 边界；service 只声明局部限制。 |
-| Search / Provider | SearchExecutor 顺序执行、局部 search/extract 限制；Provider 只负责 transport、typed error、retryable/Retry-After。 |
-| Evidence | optional sidecar、strict unique grounding、diagnostics；失败不得改顶层 error、router 或 Writer。 |
-| Trace | logical append-only，checkpoint 物理 retention/compaction；不计 usage、不参与路由。 |
-| Evaluation | 离线、确定性、只读；snapshot 绑定 evaluator、配置与实际 dataset/case 内容。P5.1 对 source coverage、grounded citation、report completeness 应用 case-level 阈值；P5.2 对同一 cases 输出 Evidence mode value comparison；P5.3 归档真实手工 workload 的 observed/derived 数据；P6.1 校准固定 reference oracle，P6.2 聚合重复运行。`grounded_citation` 仅是 URL/provenance grounding，不证明事实正确性或语义蕴含。均不进入生产路由。 |
+| Graph | 固定拓扑、现有 router、runner/checkpoint 入口；不承载业务 retry 或新增能力编排。 |
+| State / Agent | Agent 产生业务 patch；legacy/V1 字段只能显式双写，不做 alias、auto-hydration 或隐式同步。 |
+| Runtime / Execution | 拥有 global deadline、operation budget、terminal reason、lease、cancel/resume、at-least-once；service 只声明局部限制。 |
+| Search / Provider | `SearchExecutor` 拥有确定性 search/extract 和局部限制；Provider 只负责 transport、typed error、retryable、Retry-After，不选 fallback/circuit。 |
+| Evidence | optional sidecar、strict unique grounding、diagnostics；compatibility findings 优先，sidecar failure 不改变顶层 error、router 或 Writer 输入。 |
+| Memory | local SQLite、deterministic lexical retrieval、source-backed projection；默认关闭，仅在既有 Planner/Searcher 内 bounded injection。 |
+| Trace / Usage / Evaluation | 只观测：Trace 不等于 Usage、不参与 routing；Evaluation 只读，不改生产配置或流程。 |
 
-### 必须保持的 invariants
+## End-to-End Research Flow
 
-- `run_id` 不等于 checkpoint `thread_id`；resume 保留 run identity，cache replay 是新 run，delivery 语义是 at-least-once。
-- 默认 deterministic Search、Evidence 和 LLM adapter 共享 Runtime 的 deadline/budget；`legacy_agent` 不承诺该控制链，不能恢复为默认模式。
-- Provider 不选择 fallback 或 circuit；Agent 不自建跨 service retry/timeout。
-- Evidence compatibility findings 先于 sidecar；sidecar failure 只进入 diagnostics。
-- Writer 继续消费 legacy 输入；Trace/Evaluation 只做观测与离线判断。
+1. CLI/Chainlit 创建或 resume run；Runtime 建立 run identity、lifecycle、deadline/budget 和 checkpoint/lease 语义。
+2. Planner 读取 canonical Query，可选读取 bounded P8 Memory 作为 prior context；一次 LLM call 生成现有 `ResearchPlan`。P9 仅以 prompt/normalization 改善 purpose、去重与 objective-outline 对齐。
+3. Searcher 消费 `ResearchPlan.search_queries`。默认 `deterministic_v2` 经 `SearchExecutor`；Memory source hint 仅追加 bounded `site:<host>` query，仍走同一 executor。
+4. Search 结果成为 `SearchResult[]` 和 V1 `Document[]`；可信度、去重、runtime controls、partial/error 语义保持现有路径。
+5. Synthesizer 产出 legacy findings、V1 `Finding[]` 和可选 Evidence；Evidence sidecar 不能替代 compatibility findings 或改变全局失败语义。
+6. Writer 消费 legacy findings/search inputs 与 outline，生成有序 sections/citations，显式双写 V1 `Report`；默认 serial，hard failure 时 all-or-nothing。
+7. 仅 completed run 后，P8 才投影 source-backed findings 到本地 Memory。Trace/Usage 记录运行；Evaluation 离线只读 State/Report/Evidence，产出 snapshot/benchmark，不修改该 run。
 
-## 能力盘点：基础设施、近期缺口与远期目标
+## Core Data Flow / Agent I/O
 
-| 领域 | 已具备的基础设施 | 近期能力缺口 / 判断依据 | 远期目标 |
+| 阶段 | 输入 | 输出 | Contract / 备注 |
 |---|---|---|---|
-| Planning | structured plan、query/outline、LLM execution/trace/usage。 | 缺少计划质量基线、计划覆盖评估及“何时需要重规划”的业务规则。 | 可审计的计划修订与任务分解。 |
-| Search | deterministic 顺序 SearchExecutor、provider factory、partial、global budget/deadline、typed errors。 | 单次 P5.3 看到 Evidence mode 的 provider errors，但没有多 provider、availability SLO、选择顺序或重复样本，因此不构成 resilience 项目依据。 | 分支式研究、来源策略与按需 provider resilience。 |
-| Synthesis / Evidence | compatibility findings、strict grounding、optional Evidence sidecar、failure isolation；P5.2 fake benchmark 与 P5.3 real harness。 | 默认 sidecar 关闭；完整真实重跑已有 4（enabled）/5（partial）个 matched-success case，但只是一次 observed sample，且 enabled/partial 都出现 provider-error/partial diagnostics，不能升级为默认启用策略。 | evidence-aware research 成为可衡量、可配置的研究策略，而非无条件多加一个 Agent。 |
-| Report | ordered serial sections、citation projection、attempt trace、read-only latency profile。 | P5.3 的 Writer/total 为 0.602–0.671、p95 为 354–379s，说明它是候选瓶颈；但没有明确用户 SLO 或重复样本，不满足优化项目的启动条件。 | 在明确契约后进行 bounded concurrency 或 partial composition。 |
-| Evaluation | fixed dataset、deterministic read-only metrics、version/config/content snapshot；P5.1 quality rubric/regression gate、P5.2 Evidence value benchmark、P5.3 real archive/SLO。 | 已足以正式关闭“建立 baseline”的 P5；尚无 reference answers、重复 real samples 或可行动的稳定失败信号，不足以驱动自动治理/Reflection。 | 校准后的可比较质量回归体系；是否进入人工或自动治理须单独设计。 |
-| Memory | State 已有 `MemoryItem`、retrieved IDs 等占位字段。 | 没有存储、检索、provenance、过期/删除、隐私或注入点，因此尚不是能力。 | 有来源与生命周期的 research memory。 |
-| Reflection / Supervisor | State 已有 critic feedback、next action、supervisor decision 占位。 | 没有质量信号到动作的协议、循环上限、成本预算、checkpoint/approval 语义。 | 基于证据的修订循环与受控监督路由。 |
-| Multi-Agent | 当前四个角色是固定串行职责，不是可调度的多 Agent 协作系统。 | 缺少 branch contract、join/merge、共享预算、公平取消和结果归因。 | 并行研究分支与可审计汇聚。 |
+| Intake / Runner | 用户输入、checkpoint state | canonical `query`、`run_id`、execution context | `run_id` 不等于 checkpoint `thread_id`；cache replay 是新 run。 |
+| Planner | Query、可选 bounded `MemoryItem` prior context | `ResearchPlan` / legacy `plan`、`retrieved_memory`、`memory_ids` | `ResearchPlan = topic + objectives + SearchQuery[] + report_outline`；memory 不是证据/最终引用，不能替代当前 objectives。 |
+| Searcher | `ResearchPlan.search_queries`、可选 provenance hints | `SearchResult[]`、V1 `Document[]`、search diagnostics | 所有搜索经 `SearchExecutor`；memory 不得绕过。 |
+| Synthesizer | search results/documents、plan objectives | legacy `key_findings`、V1 `Finding[]`、可选 `Evidence[]` | Evidence 仅为 provenance/grounding 诊断，不证明事实正确性或语义蕴含。 |
+| Writer | legacy findings、legacy search results、outline | 有序 `ReportSection[]`、`final_report`、V1 `Report`、citations | Writer 不直接消费 memory；outline-index assemble；hard failure 无 partial report。 |
+| Memory post-run | completed State、Findings/Evidence/source URLs | SQLite `ResearchMemoryRecord` | 仅 terminal completed 写入；storage failure 非致命；TTL/dedup/prune 生效。 |
+| Evaluation | 已完成 State/Report/Evidence/Trace/Usage | read-only result、snapshot、benchmark archive | 不构造生产控制流，不改 returned State。 |
 
-## 近期路线图：先证明需求，再改变控制流
+## Capability Status Matrix
 
-### 近期 — P5 Research Quality & Evidence Baseline
+| 能力 | 状态 | 默认 | 当前决策 / 限制 |
+|---|---|---|---|
+| Graph V1 线性研究流 | Implemented | Enabled | 保持 `Planner -> Searcher -> Synthesizer -> Writer`。 |
+| Deterministic Search | Implemented | Enabled | `deterministic_v2` + `SearchExecutor`；`legacy_agent` 仅兼容。 |
+| Evidence sidecar | Implemented | Disabled | P5/P6 不足以支持默认启用或 selector。 |
+| Writer serial scheduling | Implemented | Enabled | 生产默认保持 serial。 |
+| Writer bounded sections | Implemented | Experimental | 显式 `bounded`，默认 bound=2；P7 仅证明本地 Writer 加速。 |
+| Research Memory V1 | Implemented | Disabled | SQLite/lexical/provenance baseline；无 rollout、privacy UX、semantic ranking、真实 effectiveness 证据。 |
+| Planning Enhancement | Implemented | Enabled（既有 Planner 内） | P9 是 prompt/normalization + fake-only lexical baseline；不证明真实 provider 质量。 |
+| Offline Evaluation / calibration / repeatability | Implemented | Offline only | read-only；snapshot 绑定 evaluator、config 与 dataset content。 |
+| Provider fallback / circuit breaker | Future | N/A | 需要两个 provider、availability SLO、taxonomy、policy、cross-provider observability。 |
+| Evidence selector | Future | N/A | P6 evidence sufficiency 未满足。 |
+| Reflection / replan / Supervisor | Future | N/A | 缺 quality-to-action protocol、bounded loop/budget、checkpoint/approval 语义。 |
+| Graph V2 / branch-join | Future | N/A | 仅在下文启动条件满足时评审。 |
+| P10 Research Coverage | Candidate / review only | N/A | 未批准、未设计、未实现、未 benchmark、非生产承诺。 |
 
-#### P5.1 COMPLETE — Offline quality baseline
+## Current Decision Point
 
-- `researchos_offline_baseline` v2 有 6 个固定任务：政策比较、城市气候适应、半导体风险、临床证据转化，以及明确的 partial-evidence 和 provider-failure 场景。
-- 每个 case 在 dataset 内容中持有 `ResearchQualityRubric`：最少 distinct sources、grounded citations、report sections、report characters 与 heading 要求；rubric 随 dataset content fingerprint 和 snapshot 变化。
-- evaluator 只读取现有 State/Report/Evidence：`source_coverage` 统计 document URI，`grounded_citation` 要求报告 URL 与 `grounded`/`partial` 的有效 Evidence source URL 对应，`report_completeness` 检查固定报告下限。
-- suite regression gate 比较 case `expected_outcome`，并要求非 failure cases 的三项 quality metrics 均达到 dataset 中的确定性通过率阈值。gate 仅是离线输出，不影响 run、Graph、router、Writer 或 runtime/evidence ownership。
-- 测试仅将 local fake case runner 注入 `run_offline_evaluation`；CI 继续只运行 fake-only pytest。真实 provider/LLM workload 必须保持为独立、手工可选验证。
+**P10 Research Coverage 只是 candidate/review。** 它不是已批准 milestone，不得描述成实现工作、Graph 改动或生产策略。
 
-#### P5.2 COMPLETE — Evidence Value Benchmark
+批准前，评审必须明确：
 
-- `run_evidence_value_benchmark` 对同一 `researchos_offline_baseline` v2 cases 和 P5.1 rubric 顺序运行 `disabled`、`enabled`、`partial` 三种注入模式；不会构造 Graph、provider、LLM 或修改 returned State。
-- 每个 mode 保留完整 P5.1 `OfflineEvaluationResult`，并汇总三项 quality pass rate、Evidence diagnostics/evidence record/grounded-report adoption，以及现有 persisted UsageMetrics 的 latency、LLM/tool calls、tokens。
-- enabled/partial 都相对于 disabled 输出 per-case delta；只有 quality pass count 增长的 case 才标为 `value_observed`，其 tags 汇总为 `benefited_task_tags`。因此“哪些任务类型有收益”及 partial 的实际价值由可复现输入结果决定，而非由 benchmark 写死策略。
-- benchmark snapshot 绑定 dataset、模式顺序与配置。默认 CI 测试使用 deterministic fake runner；真实 DeepSeek/Tavily 比较必须由显式手工 harness 注入该 runner，使用独立 configuration/snapshot，且不加入 CI。
-- Evidence diagnostics 仍只是观测/sidecar 输出：sidecar failure、partial adoption、legacy Writer 输入和现有 failure isolation 完全不变。
+- P9 lexical planning checks 尚未解决、且用户可感知的具体 coverage 问题；
+- 固定、可复现的 coverage 定义与 deterministic fake-only baseline；
+- Graph V1 内的最小 intervention，且 Writer 输入、Report contract、runtime ownership 不变；
+- failure、deadline/budget、citation/provenance、Trace/Usage、Evaluation 的明确语义；
+- 为什么它优于保持当前 Planner/Searcher 行为不变。
 
-#### P5.3 COMPLETE — Real Workload & SLO Baseline
+在此之前，保持 Evidence disabled、Memory disabled、Writer serial、无 fallback、无 Reflection，Graph V1 不变。
 
-- `scripts/run_real_workload_benchmark.py` 是独立、手工运行的 DeepSeek + Tavily 入口；它禁用 cache，顺序使用同一 P5.1 dataset 的 disabled/enabled/partial mode，并只在每个新 Graph run 的进程环境中临时切换 Evidence flags，随后恢复。它不属于 CI，也不写 `.env` 或生产默认配置。
-- `src/evaluation/real_workload.py` 将 harness wall time、Graph node trace（Planner/Searcher/Synthesizer/Writer）、EvidenceAnalyzer attempts、UsageMetrics、provider/tool errors、retry/timeout/partial/failure 作为 **observed**；将 P5.1 quality、P5.2 value comparison、nearest-rank p50/p95、success/quality/provider-failure rate、Writer/total 比例作为 **derived**。
-- archive 同时生成 `benchmark.json`（机器读取源记录）和 `benchmark.md`（人类报告），明确 observed/derived 分界。只有 disabled 与目标 mode 对同一非 failure case 都成功时，才计算 observed wall-latency / LLM / tool-call overhead；否则 comparison 标为 `inconclusive`，不能解释为收益。
-- 余额恢复后已完整重跑，归档为 `artifacts/real-workload-benchmarks/20260819T042430Z/`（DeepSeek + Tavily、cache disabled、6 个固定 P5.1 cases × 3 modes，约 85 分钟）。三个 mode 都完成了全量 case 矩阵；无 timeout/retry。disabled 为 6/6 success、quality pass 0/6，source coverage / grounded citation / report completeness 为 1.000 / 0.000 / 1.000，p50/p95 为 265.158s / 357.798s，Writer/total 为 0.671；enabled 为 5/6 success、quality pass 1/6，三项为 0.833 / 0.167 / 0.833，Evidence adoption 0.800（35 grounded records），p50/p95 291.394s / 378.542s、Writer/total 0.602，4/6 case 有 provider errors、5 个 partial、1 个 failure；partial 为 6/6 success、quality pass 2/6，三项为 1.000 / 0.333 / 1.000，Evidence adoption 1.000（45 grounded records），p50/p95 305.003s / 354.473s、Writer/total 0.642，4/6 case 有 provider errors、6 个 partial、0 个 failure。
-- 已得可比较的派生 comparison：enabled 相对 disabled 有 4 个 matched-success cases（`ai-regulation-overview`、`semiconductor-supply-chain`、`clinical-evidence-translation`、`coastal-adaptation-partial-evidence`），grounded-citation pass-rate +0.200、observed wall-latency overhead +266.679s、token/LLM-call overhead +79,332 / +34；partial 有 5 个 matched-success cases（前述四个加 `urban-climate-adaptation`），grounded-citation pass-rate +0.200、observed wall-latency overhead +125.747s、token/LLM-call overhead +119,911 / +43。两个 mode 的 benefited case 都仅为 `ai-regulation-overview`，tags 为 `policy, comparison`。这些均是单次 **observed data/derived metrics**，不构成生产策略建议；旧的余额耗尽归档保留作历史原始记录。
+## Development Guardrails / DO NOT BREAK
 
-#### P5 closure review — FORMALLY CLOSED
+- 不改 Graph 拓扑、现有 router、Writer legacy 输入或既有 `ResearchPlan`/Report contracts；例外需要独立批准的控制流和迁移设计。
+- `run_id` 必须不同于 checkpoint `thread_id`；resume 保留 run identity，cache replay 是新 run，delivery 保持 at-least-once。
+- 默认 deterministic Search、Evidence、LLM adapter 共享 Runtime deadline/budget。`legacy_agent` 不承诺该控制链，不能恢复为默认。
+- 不引入 provider fallback/circuit selection，也不让 Agent 自建跨 service retry/timeout；保留 typed provider errors 与 runtime-owned retry/budget policy。
+- Evidence compatibility findings 必须先于 sidecar；sidecar failure 只进 diagnostics，不能改变 top-level error、router 或 Writer 输入。
+- Writer 保持 all-or-nothing。bounded sections 必须保留 outline-index assemble、first-seen citation determinism、经 runtime `ExecutionContextCoordinator` 的 shared deadline/budget 和 cancel propagation；不得直接共享 immutable `ExecutionContext`。
+- Memory 默认关闭。retrieval/write failure 非致命，不得改变 top-level error、router、Writer 输入或 cache replay。provenance 只能是 `evidence_grounded`、`evidence_partial`、`legacy_source_url`，不证明 fact correctness 或 claim support。
+- P8 memory 只作 prior context：不能替代当前 Query/objectives、充当最终 citation、绕过 `SearchExecutor` 或直接进入 Writer。
+- P9 必须保持一次 Planner LLM call；normalization 只清理/去重/标记已有条目，不得凭空生成 objectives、queries、sections、Agent 或 Graph node。
+- Trace 是 append-only observation，不拥有 Usage/routing；Usage 每个真实 LLM attempt 仅计一次；Evaluation 是 deterministic/read-only，除非单独批准不得成为生产 gate。
+- 不得从单个真实样本或 fake-only 结果推导生产策略；后续决策必须保留 observed/derived 区分和 archive 路径。
 
-P5 的交付目标（确定性 quality baseline、fake-only value benchmark、独立真实 workload/SLO harness，以及一次完整三模式真实归档）均已满足，因此 **P5 正式关闭**。下面的结论严格区分运行、质量与推断：
+## P0-P9 Milestone Map
 
-1. **Run success 不等于 quality outcome。** disabled 运行 6/6 success，但 quality pass 为 0/6（grounded citation 0）；partial 运行 6/6 success 但所有 case 都有 partial diagnostics。quality 是现有确定性 rubric 的 **derived** 结果，不能被 completion 覆盖。
-2. **Evidence 不默认启用，也不选择性启用。** 单次观测显示 enabled/partial 的 grounded-citation pass-rate 各较 disabled +0.200，且 partial adoption 为 1.000；但 overall quality pass 仅为 1/6、2/6，enabled 还有 1 个失败，两个模式各有 4/6 case 出现 provider errors。唯一 benefited case/tag 是 `ai-regulation-overview` / `policy, comparison`，不足以定义稳定的 selector、阈值或默认策略。
-3. **Writer performance 不立项。** 0.602–0.671 的 Writer/total 与 354–379s p95 是真实 **observed profile**，足以作为后续采样指标；没有用户 SLO、重复运行或 section correctness/partial-composition 契约，不满足 bounded concurrency 或 partial composition 的启动条件。
-4. **provider resilience 不立项；Graph V2 不立项。** provider errors 和 partial diagnostics 证明 failure isolation 被观测到，但没有第二 provider、availability SLO、健康选择规则或重复失败分布。也没有任何要求 reflection、supervisor routing、并行 branch/join 的业务控制流证据；现有 Graph V1 不变。
+| Milestone | 目的 | 核心改动 | 关键决策 |
+|---|---|---|---|
+| P0-P2 | 建立 V1 contracts 与安全研究原语 | 显式 State double-write、LLM/Search 基础、optional Evidence sidecar | 保留 legacy path 与 failure isolation。 |
+| P3 | 让 run 可操作、可观测 | lifecycle、checkpoint/resume/cache replay、Trace、read-only Evaluation | Runtime semantics 与 observation 不进入业务 routing。 |
+| P4.1-P4.5 | 集中 execution governance | persisted policy/lease、deadline/budget/retry、provider/LLM contracts、Writer profile、trace retention、snapshot binding | Runtime 拥有 global controls；provider/agent 不选 fallback 或跨 service retry。 |
+| P5.1 | 建立 offline quality baseline | 6 fixed cases、quality rubric、regression gate | quality evaluation 是 deterministic/read-only，不进生产 routing。 |
+| P5.2 | 离线衡量 Evidence value | disabled/enabled/partial fake benchmark | benchmark 不编码 selector/default policy。 |
+| P5.3 + closure | 观测真实 workload/SLO | manual DeepSeek/Tavily archive 与 observed/derived comparison | 不默认启用 Evidence；不启动 provider/Graph V2 项目。 |
+| P6 | 校准并重复 Evidence 测量 | reference fixtures、repeatability harness、two-round closure | Evidence selector、Writer optimization、provider resilience 均 insufficient/not assessable。 |
+| P7 | 试验 Writer section concurrency | bounded=2 scheduler、shared coordinator、deterministic assembly | 生产 Writer 保持 serial；无新 product/SLO 决策不继续扩展性能项目。 |
+| P8 | 建立最小 research memory | source-backed SQLite、lexical retrieval、bounded Planner/Searcher injection | 默认关闭；不引入 Memory Agent/vector DB。 |
+| P9 | 在既有 contract 内改善 planning quality | 6-case fake baseline、purpose labels、prompt/normalization | 不引入 replan、额外 LLM call、Graph change，也不宣称真实 provider 质量。 |
 
-#### P6.1–P6.2 COMPLETE — Evaluation calibration & repeatability harness
+## Detailed History / Appendix
 
-- `src/evaluation/calibration_dataset.py` 定义与 P5 workload 完全分离的 `researchos_quality_calibration` v1：完整 provenance/structure、来源不足、未 grounded 报告 URL、结构不完整四类 reference-backed fixtures。每例的 reference source、expected signal/count 和 rationale 都进入 `calibration_content_fingerprint`；任何内容变化都会改变 calibration 及 evaluator snapshot identity。
-- `run_rubric_calibration` 只读取由调用方注入的 State-like fixture，并复用既有 evaluator 比较三项 metric 和可观察计数；输出 alignment，不写 State、不构造 Graph/provider/LLM，也不改变 P5 dataset 或 regression threshold。这里的 `grounded_citation` 明确仅验证 report URL 与有有效 Evidence 的 source URL 的 provenance 对齐，**不**验证事实正确性、claim support 或 semantic entailment。
-- `run_repeatability_benchmark` 顺序调用既有注入式 P5.3 runner；每轮将完整 P5.3 result 保存为 `observed_runs`（嵌套 P5.3 继续自身 observed/derived 分界），并把 mode-level quality、wall latency、p95、Writer share/node latency、Evidence adoption、provider-error rate 的 count/mean/min/max/sample SD/CV 输出到 `derived_metrics`。
-- 对 enabled/partial 的 Evidence value，P6.2 汇总每轮 P5.3 quality delta 和 observed wall delta；只有同一轮、同一 non-failure case 且 disabled/目标 mode 均 completed 的 pair 才进入跨轮 matched comparison。结果明确输出 matched-success rate、quality/grounded-citation/wall-time delta 的 dispersion 与 repeated-benefit rate；没有 pair 即为 unavailable/inconclusive，不作收益推断。
-- `RepeatabilityDecisionCriteria` 仅生成 `InitiativeEvidenceAssessment`，从不修改生产配置、Evidence 开关、Graph 或 provider policy。Evidence selector 的充分证据要求至少 3 轮、same-case positive provenance delta 的 repeated/matched-success 稳定性以及无过度 provider-error 回退；Writer 与 provider resilience 分别还要求显式的 latency / error-rate SLO，缺失时标为 `not_assessable`。`sufficient` 仅表示可进入后续人工立项评审，不自动开始优化、selector、fallback 或 Graph V2。
-- `scripts/run_repeatability_benchmark.py --rounds 3` 是 P6.3 手工 DeepSeek + Tavily 入口，cache disabled、`ci: false`，归档 JSON 与 Markdown；CI 仅运行 deterministic fake runner 测试。
+### A. P5 Research Quality and Evidence Baseline
 
-#### P6.3 two-round closure review — FORMALLY CLOSED
+- `researchos_offline_baseline` v2 有 6 个固定任务：政策比较、城市气候适应、半导体风险、临床证据转化，以及 partial-evidence/provider-failure 场景。每 case 有 `ResearchQualityRubric`（distinct sources、grounded citations、report sections/characters、heading）；dataset content 进入 snapshot fingerprint。
+- evaluator 只读取 State/Report/Evidence：`source_coverage` 统计 document URI；`grounded_citation` 对齐 report URL 与有效 grounded/partial Evidence source URL；`report_completeness` 检查固定报告下限。regression gate 只产出离线结果，不改 Graph/router/Writer/Runtime/Evidence ownership。
+- `run_evidence_value_benchmark` 对同一 dataset/rubric 注入 `disabled`、`enabled`、`partial`，不构造 Graph/provider/LLM，也不改 returned State；输出 quality、Evidence adoption/diagnostics、UsageMetrics 与 per-case/tag delta，只有 quality pass count 上升才标 `value_observed`。
+- P5.3 手工入口：`scripts/run_real_workload_benchmark.py`；DeepSeek + Tavily，cache disabled，P5.1 dataset 三种 mode，不写 `.env` 或生产默认。真实 archive：`artifacts/real-workload-benchmarks/20260819T042430Z/`（`benchmark.json`/`benchmark.md`），6 cases x 3 modes，约 85 分钟，无 timeout/retry。harness wall/node trace/Evidence attempts/usage/errors 是 **observed**；quality/value/SLO 是 **derived**。
 
-Round 1 使用 P5.3 的完整真实归档 `artifacts/real-workload-benchmarks/20260819T042430Z/benchmark.json`；它可无转换解析为当前 `RealWorkloadBenchmarkResult`，与 Round 2 的 `artifacts/p6-repeatability-rounds/20260820T042404Z/benchmark.json` 具有相同的 dataset（`researchos_offline_baseline` v2）、mode 顺序（disabled/enabled/partial）、cache-disabled、DeepSeek + Tavily 手工执行配置和 observed/derived 合同。因此两轮是可比较的真实样本。以下数值均为 archive 中的 observed data 或由其得到的 derived metric，不能视为生产策略。
+| Mode | Success | Quality pass | Source / grounded citation / completeness | p50 / p95 | Writer / total | 其他 observed |
+|---|---:|---:|---|---|---:|---|
+| disabled | 6/6 | 0/6 | 1.000 / 0.000 / 1.000 | 265.158s / 357.798s | 0.671 | 无 Evidence adoption。 |
+| enabled | 5/6 | 1/6 | 0.833 / 0.167 / 0.833 | 291.394s / 378.542s | 0.602 | adoption 0.800（35 grounded）；4/6 provider-error、5 partial、1 failure。 |
+| partial | 6/6 | 2/6 | 1.000 / 0.333 / 1.000 | 305.003s / 354.473s | 0.642 | adoption 1.000（45 grounded）；4/6 provider-error、6 partial。 |
 
-| 信号 | Enabled：Round 1 → Round 2 | Partial：Round 1 → Round 2 |
+- enabled 对 disabled 有 4 个 matched-success cases：grounded-citation `+0.200`、observed wall `+266.679s`、token/LLM-call `+79,332 / +34`；partial 有 5 个：`+0.200`、`+125.747s`、`+119,911 / +43`。两个 mode 唯一 benefited case 为 `ai-regulation-overview`，tag `policy, comparison`。
+- P5 closure：run success 不等于 quality；Evidence 不默认/选择性启用；Writer performance、provider resilience、Graph V2 不立项。`grounded_citation` 只代表 URL/provenance grounding，不代表事实正确性、claim support、semantic entailment。
+
+### B. P6 Calibration, Repeatability, and Closure
+
+- `researchos_quality_calibration` v1 与 P5 workload 分离：4 个 reference-backed fixtures（完整 provenance/structure、来源不足、ungrounded report URL、结构不完整）；reference expectation/rationale 进入 `calibration_content_fingerprint`。
+- `run_rubric_calibration` 只读 injected State-like data；`run_repeatability_benchmark` 顺序调用 P5.3 runner，保存 observed runs 与 derived dispersion；二者均不改生产配置、Evidence flags、Graph、provider policy。
+- sufficient gate 要求至少 3 rounds、stable same-case positive provenance delta、无过度 provider-error fallback、以及 Writer/provider 的显式 SLO；即使 sufficient 也仅允许人工评审，不自动 rollout。手工入口：`scripts/run_repeatability_benchmark.py --rounds 3`，cache disabled、`ci: false`；CI 只跑 deterministic fake runners。
+- Round 1：`artifacts/real-workload-benchmarks/20260819T042430Z/benchmark.json`。Round 2：`artifacts/p6-repeatability-rounds/20260820T042404Z/benchmark.json`。二者同为 `researchos_offline_baseline` v2、disabled/enabled/partial、cache-disabled DeepSeek + Tavily 和 observed/derived contract。
+
+| 信号 | Enabled：Round 1 -> Round 2 | Partial：Round 1 -> Round 2 |
 |---|---|---|
-| grounded-citation pass-rate delta | +0.200 → +0.200 | +0.200 → 0.000 |
-| overall quality pass rate | 0.167 → 0.167 | 0.333 → 0.000 |
-| benefited case/tag | `ai-regulation-overview` / `policy, comparison` → `coastal-adaptation-partial-evidence` / `climate, evidence, partial` | `ai-regulation-overview` / `policy, comparison` → none |
-| matched-success cases | 4 → 5 | 5 → 4 |
-| observed wall-latency overhead | +266.679s → +33.951s | +125.747s → +114.929s |
-| Writer/total | 0.602 → 0.592 | 0.642 → 0.602 |
-| mode p50 / p95 | 291.394 / 378.542s → 282.525 / 327.403s | 305.003 / 354.473s → 325.196 / 400.880s |
-| provider-error rate | 0.667 → 0.500 | 0.667 → 0.667 |
+| grounded-citation pass-rate delta | +0.200 -> +0.200 | +0.200 -> 0.000 |
+| overall quality pass rate | 0.167 -> 0.167 | 0.333 -> 0.000 |
+| benefited case/tag | `ai-regulation-overview` / `policy, comparison` -> `coastal-adaptation-partial-evidence` / `climate, evidence, partial` | `ai-regulation-overview` / `policy, comparison` -> none |
+| matched-success cases | 4 -> 5 | 5 -> 4 |
+| observed wall-latency overhead | +266.679s -> +33.951s | +125.747s -> +114.929s |
+| Writer / total | 0.602 -> 0.592 | 0.642 -> 0.602 |
+| mode p50 / p95 | 291.394 / 378.542s -> 282.525 / 327.403s | 305.003 / 354.473s -> 325.196 / 400.880s |
+| provider-error rate | 0.667 -> 0.500 | 0.667 -> 0.667 |
 
-Provider-error 的 operation/case 分布同样不稳定：enabled 的 `analyze_document` LLM errors 从 7 次变为 6 次，受影响 case 从 `ai-regulation / clinical / search-provider-failure` 变为 `ai-regulation / clinical / urban-climate`；partial 的 `analyze_document` errors 从 7 次变为 5 次且受影响 case 改变，Round 2 还出现了 `plan` 与 run-level error。Writer/total 在两轮中仍处于 0.592–0.691 的 observed 区间，但没有用户定义的 latency SLO 或 section-correctness/partial-composition contract，不能解释为优化项目证据。
+- provider-error distribution 不稳定：enabled `analyze_document` errors `7 -> 6` 且 affected cases 改变；partial `7 -> 5`，Round 2 还有 plan/run-level error。Round 3 有意不执行：两轮已经显示 benefited case/tag 转移/消失、partial delta 消失、quality 下滑、matched population/error distribution 改变；继续采样不改变当前非批准决策。
+- P6 closure：Evidence selector **insufficient**；Writer optimization 因缺 user SLO/section contract 为 **not assessable**；provider resilience **insufficient / not assessable**。不得据此实现 selector、fallback/circuit 或 Graph V2。
 
-这里的 `grounded_citation` **仅**代表报告 URL 与有效 Evidence source URL 的 provenance/URL grounding；它不代表事实正确性、claim support 或 semantic entailment。因此 enabled 的两轮 +0.200 不能被提升为“Evidence 已稳定提升报告真实性”的结论。
+### C. P7 Writer Performance Experiment Closure
 
-**停止 Round 3 的理由：** 两轮已经出现 benefited case/tag 转移或消失、partial 的 grounded-citation delta 消失、quality outcome 下滑、matched population 与 provider-error distribution 变化。它们足以否定当前 initiative 的 evidence-sufficiency；继续采样可能描述更多波动，但不会改变当前“不足以立项”的决策，故不为满足 `>=3` 的 sufficient gate 而强制执行 Round 3。
+- P7 只改 Writer 内部 section scheduling；Graph V1/router、Writer legacy input、V1 `Report`、Evidence sidecar、provider policy、runtime ownership 不变。`WRITER_SECTION_EXECUTION_MODE` / `WRITER_SECTION_CONCURRENCY` 已实现；生产 `serial`，`bounded` 显式开启，实验默认 2。
+- section 无相互依赖：只读 shared topic、outline title、legacy findings/search results、shared runtime context。并发探针证明 immutable `ExecutionContext(max_operation_calls=1)` 有 lost-update；runtime `ExecutionContextCoordinator` 以 lock 原子消费 shared deadline/budget。bounded 保持 all-or-nothing、cancel propagation、outline-index assemble、first-seen citations、stable details/Trace。
+- 历史 tests：targeted `25 passed, 1 warning`；全量 fake-only `273 passed, 2 warnings`。真实 A/B archive：`artifacts/writer-performance-experiments/20260821T033158Z/`；DeepSeek + Tavily、Evidence disabled、cache disabled、单 `ai-regulation-overview`，不做 repeatability，不改默认。
 
-结论仅限当前证据：
+| Arm | Status | Total wall | Writer node | Section LLM sum | Sections | Citations | Quality |
+|---|---|---:|---:|---:|---:|---:|---|
+| serial(1) | completed | 238.816s | 166.782s | 166.764s | 8 | 9 | source coverage passed；grounded citation failed；report completeness passed |
+| bounded(2) | completed | 238.236s | 119.109s | 212.908s | 8 | 9 | source coverage passed；grounded citation failed；report completeness passed |
 
-1. **Evidence selector：insufficient。** 没有同一 case/tag 的重复稳定受益，也没有稳定的 partial 增益；这不表示 Evidence 永久无价值。
-2. **Writer optimization：not_assessable。** profile 可供未来观测，但缺用户 SLO，且没有质量/section 契约，不能立项。
-3. **Provider resilience：insufficient / not_assessable。** 缺 availability/error-rate SLO 与可行动的 provider taxonomy，且错误 operation/case 分布不稳定；不得据此实现 fallback/circuit。
-4. **P6 可以正式关闭。** P6.1 calibration、P6.2 harness 和两轮可比较真实采样已完成，并已依据预声明 stopping rule 作出非自动化 closure judgement；不需 Round 3。
+- 单样本 observed：Writer wall `-47.673s` / `-28.58%` / 约 `1.40x`；total wall 仅 `-0.580s` / `-0.24%`。Non-Writer aggregate `72.033s -> 119.127s`（`+47.094s`），archive 无 Planner/Searcher/Synthesizer per-node latency，不能归因。section LLM sum / Writer wall 为 serial `1.00x`、bounded `1.79x`；缺 per-section start/end/token，不能作更强判断。
+- 决策：bounded=2 技术可行但仍 experimental；生产 serial；无新的 product/SLO 决策不得扩大 Writer performance 工作。
 
-**下一阶段唯一推荐方向：Evaluation measurement-contract governance。** 在任何 Evidence/Writer/provider 产品项目之前，先通过单独评审定义用户 SLO、provider error taxonomy、reference-answer/claim-support 的评价边界与采样停止规则；该方向不改变生产控制流或默认策略。
+### D. P8 Research Memory V1 Closure
 
-### 中期 — 只在触发条件满足时实施的能力
+- P8 是 local/default-off baseline：`RESEARCH_MEMORY_ENABLED=false`；无 Reflection、Supervisor、Graph V2、branch/join、provider fallback、Memory Agent、vector DB、personalized memory。
+- `ResearchMemoryRecord` 从 completed-run `Finding` 或 legacy `key_findings` 投影，必须有 source URL；Evidence-backed 用 Evidence URL/document IDs，legacy 用 `SearchResult` / `ReportSection.sources`。存 `memory_id`、stable `content_hash`、run/topic/statement/summary、source/evidence/document refs、timestamps/TTL、grounding/provenance；不存 raw prompts、full reports/pages、secrets、provider payloads、unredacted traces。
+- provenance 严格为 `evidence_grounded`、`evidence_partial`、`legacy_source_url`，只声明 URL/provenance，不声明 correctness/support/entailment。
+- `ResearchMemoryStore` 是 `RESEARCH_MEMORY_STORE_PATH` 本地 SQLite（默认 `.cache/research_memory/memory.db`），按 normalized `(statement, source_refs)` stable hash dedup，以 `updated_at`、`memory_id` 确定性 trim；支持 upsert/get/delete/prune/retrieve/count/dump；TTL 默认 30 days，max 默认 500。
+- retrieval 是 query/topic/statement/summary/tags/source hostname 上 deterministic lexical token overlap，投影到 `MemoryItem`/`memory_ids`；`RESEARCH_MEMORY_RETRIEVAL_LIMIT=0` 禁用 injection。write 仅 `status=completed` 且 `terminal_reason=completed` 的 runner boundary；storage failure 非致命，cache replay 无 write path。
+- Planner 只取 bounded memory prior context；Searcher 将 provenance URL 变成 bounded `site:<host>` hints，经 `SearchExecutor`；Writer 不消费 memory。retrieval/write failure 不改变 top-level error、router、Writer、cache replay。
+- 历史 tests：targeted/closure `31 passed, 1 warning`；全量 `279 passed, 2 warnings`。无需真实 API benchmark 才能关闭这个 local/default-off baseline；剩余限制为 rollout、privacy UX、semantic ranking、memory-quality evaluation、real-workload effectiveness。
 
-- **Writer bounded concurrency / partial composition**：仅当代表性 profile 持续显示 Writer 是 SLO 瓶颈时启动。先定义有序合成、citation determinism、section failure、partial report、共享 budget/cancel 和 trace identity；可在 Graph V1 内完成，不自动要求 Graph V2。
-- **Provider fallback / circuit breaker**：仅当至少两个可用 provider、明确 availability SLO、错误分类/Retry-After 解释、选择顺序、健康观测和跨 provider usage/trace 规则均已定义时启动。历史 `web_utils` circuit 代码不等于当前 Provider policy。
-- **Evidence-aware research 产品化**：仅在 P5 显示 grounded evidence 改善目标任务质量后，设计任务选择、配置、partial adoption 与 Evaluation 回归门槛；保持 failure isolation，不能把 Evidence 失败变为全局失败。
-- **计划修订 / Reflection**：仅当 Evaluation 能提供可行动且稳定的失败信号时，设计单一、有限次数的 replan/research/rewrite 机制及其预算和终止条件。
+### E. P9 Planning Enhancement Closure
+
+- `researchos_planning_quality` `p9.v1` 有 6 fixed fake cases 和 3 deterministic lexical metrics：objective facet coverage、normalized purpose-category diversity、outline facet alignment；复用 snapshot/fingerprint、Trace/Usage 和一次 Planner call。
+- prompt 要求 `background`、`mechanism`、`comparison`、`authority`、`implementation`、`risk_limitations`、`trends` 中的 bounded purpose label，要求 objective-outline 对应；当前 Query/objectives 优先于 P8 prior memory。`normalize_research_plan` 只 trim/deduplicate 已给 objectives/queries/outline 并标记已有 purpose；不创建 objectives/queries/sections/Agent/node/额外 LLM call。
+- frozen fake before/after：fully passing `1/6 -> 6/6`；objective coverage `0.5556 -> 1.0000`；purpose diversity `1.3333 -> 3.0000`；outline alignment `0.5417 -> 1.0000`。改善：`ai-regulation-comparison`、`urban-climate-adaptation`、`clinical-evidence-translation`、`enterprise-ai-evaluation`、`renewable-grid-integration`；`semiconductor-supply-chain` 保持 `1.0 / 3 / 1.0`。
+- 历史验证：targeted `29 passed, 1 warning`；全量 `282 passed, 2 warnings`。未运行真实 API benchmark；fixture 结果不证明真实 provider 或端到端研究质量。
+
+### F. Historical Decision Summary
+
+- P5/P6：不默认/selector Evidence；不因当前证据启动 provider resilience 或 Graph V2。
+- P7：不切 Writer 默认，不继续扩大 Writer benchmark。
+- P8：baseline 关闭且默认关闭；不意味着 Memory V2 rollout。
+- P9：baseline 关闭；不引入 automatic replan/Reflection/Supervisor/Graph V2，也不形成生产策略。
+- measurement-contract governance 仍是 Evidence、provider、Reflection、Writer-default 等高风险改动前置条件；不得把 P5/P6/P7 observed 或 P8/P9 fake-only 数据直接转为生产 policy。
 
 ## Graph V2 启动条件
 
-**Graph V2 不是默认下一步，也不是性能优化、增加模型或新增数据字段的前提。** 只有下列业务控制流有明确需求、成功指标和迁移方案时才立项：
+**Graph V2 不是默认下一步，也不是性能优化、增加模型或新增数据字段的前提。** 只有同时具备明确业务需求、成功指标和迁移方案时才可立项：
 
-1. Reflection loop：质量信号需要决定 replan、re-search 或 rewrite，且必须定义最大轮数、收敛/终止与成本上限。
-2. Supervisor routing：系统须在多个下一动作间动态选择，而非沿既有线性 router 前进。
-3. 并行研究分支：需要并发子问题、结果 join/merge、共享 budget、取消传播与可追溯 attribution。
-4. 人工审批：运行须在 checkpoint 处等待/恢复审批，并有权限、超时和 terminal semantics。
+1. Reflection loop：quality signal 决定 replan/re-search/rewrite，并定义最大轮数、收敛/终止、cost cap。
+2. Supervisor routing：系统在多个 next action 中选择，而不是沿现在线性 router 前进。
+3. Parallel research branches：并发子问题有 join/merge、shared budget、cancel propagation、可追溯 attribution。
+4. Human approval：checkpoint wait/resume 定义 permission、timeout、terminal semantics。
 
-立项前必须产出：业务场景与 SLO、State/message/branch-merge contract、runtime budget/retry/cancel/partial 协议、checkpoint/resume/lease 影响、legacy migration/rollback，以及离线 evaluation 方案。任一缺失时维持 Graph V1。
+任何 proposal 必须定义 business scenario/SLO、State/message/branch-merge contract、runtime budget/retry/cancel/partial protocol、checkpoint/resume/lease impact、legacy migration/rollback、offline evaluation。任一缺失则保持 Graph V1。
 
 ## 最终 ResearchOS 演进方向
 
-保留长期方向：**Memory、Reflection、Supervisor、Evaluation 和多 Agent 协作**。它们应建立在 P0–P4 的 runtime、trace、evidence、evaluation 与兼容边界之上，而不是绕过这些边界新增 Agent。
+长期方向仍是 **Memory、Reflection、Supervisor、Evaluation、Multi-Agent collaboration**，但必须建立在现有 runtime、trace、provenance、evaluation、compatibility 边界上，不能绕过它们另加 Agent。
 
-- Memory 先解决 provenance、retention、privacy 和 retrieval policy，随后才接入 planning/search。
-- Reflection 先消费已验证的 Evaluation 信号，并是 bounded、可终止、可计费的循环。
-- Supervisor 先使用结构化 decision contract；不以自然语言提示替代 router、预算或权限策略。
-- Multi-Agent 先定义独立分支和 merge 的数据/运行时协议；并发不是默认行为。
-- Evaluation 继续先做只读质量基线；进入生产治理、自动 gate 或人工审批流须单独评审。
+- Memory：P8 已覆盖最小 provenance/storage/retrieval/retention 与 bounded Planner/Searcher injection；personalized/semantic memory 是独立未来工作。
+- Reflection：必须消费已验证的 Evaluation signals，并保持 bounded、可终止、可计费。
+- Supervisor：必须用结构化 decision contract；自然语言 prompt 不替代 router、budget、authorization policy。
+- Multi-Agent：必须先定义独立 branches 和 merge/data/runtime contracts；并发不是默认。
+- Evaluation：保持 read-only；生产 governance、automatic gates、approval flow 必须单独评审。
 
-## Backlog（非 P4 scope）
+## Backlog
 
 - Pydantic/msgpack Async SQLite serialization warnings 与跨版本 checkpoint 策略。
-- router early termination 后的 callback/UI 展示一致性。
+- router early termination 后 callback/UI 一致性。
 - `legacy_agent` 的最终退役或受限再接入方案。
-- 后续唯一推荐：Evaluation measurement-contract governance（用户 SLO、provider error taxonomy、reference-answer/claim-support 边界与采样 stopping rule）；不得把 P5/P6 observed data 直接变为生产策略。
 
 ## 下一会话启动
 
@@ -187,4 +272,4 @@ git log -3 --oneline --decorate
 & .\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest-local
 ```
 
-开始任何实现前确认：不改 Graph 拓扑、router、Writer 输入或 legacy fields；显式双写不退化；Evidence failure isolation、runtime ownership 与 Evaluation read-only 边界保持成立。
+开始任何实现前，重确认以上 guardrails：不改 Graph/router/Writer-input/legacy fields；显式 double-write、Evidence failure isolation、runtime ownership、Evaluation read-only boundary 均不得退化。
