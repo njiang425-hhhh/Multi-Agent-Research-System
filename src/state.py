@@ -197,6 +197,10 @@ class ResearchState(BaseModel):
         default_factory=list,
         description="V1 标准研究文档集合"
     )
+    search_diagnostics: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Searcher 的只读运行诊断，不参与路由、Usage 或 Writer 输入"
+    )
     findings: List[Finding] = Field(
         default_factory=list,
         description="V1 带证据引用能力的研究发现"
@@ -272,6 +276,10 @@ class ResearchState(BaseModel):
     memory_ids: List[str] = Field(
         default_factory=list,
         description="未来 Memory Agent 使用的记忆 ID"
+    )
+    memory_diagnostics: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="可选 local memory 的只读检索、hint 与写入诊断；不参与路由或 Writer 输入"
     )
     critic_feedback: List[CriticFeedback] = Field(
         default_factory=list,

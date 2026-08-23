@@ -122,6 +122,37 @@ def test_search_executor_deduplicates_normalized_urls_before_extraction() -> Non
     assert execution.stats.extract_calls == 2
 
 
+def test_search_executor_excludes_seeded_urls_after_search_without_extracting_them() -> None:
+    search_tool = FakeSearchTool(
+        lambda query, _: [
+            _result(query, "https://example.com/already-seen/#fragment"),
+            _result(query, "https://example.com/new-source"),
+        ]
+    )
+    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
+    executor = SearchExecutor(
+        search_config=SearchConfig(
+            mode="deterministic_v2",
+            max_search_times=1,
+            max_extract_times=2,
+        ),
+        search_tool=search_tool,
+        extract_tool=extract_tool,
+    )
+
+    execution = asyncio.run(
+        executor.execute(
+            ["topic"],
+            exclude_urls=["HTTPS://EXAMPLE.COM/already-seen"],
+        )
+    )
+
+    assert [call["query"] for call in search_tool.calls] == ["topic"]
+    assert [result.url for result in execution.search_results] == ["https://example.com/new-source"]
+    assert extract_tool.calls == ["https://example.com/new-source"]
+    assert execution.stats.extract_calls == 1
+
+
 def test_search_executor_enforces_extract_budget_and_returns_partial_results() -> None:
     search_tool = FakeSearchTool(
         lambda query, _: [

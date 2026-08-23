@@ -1,55 +1,53 @@
-# Multi-Agent Research System
+# ResearchOS
 
-一个基于 LangGraph 和 LangChain 构建的自主研究系统。系统通过规划、确定性搜索、信息综合和报告写作四个阶段，将一个研究问题转化为带来源与可信度评分的结构化报告。
+ResearchOS 是一个**轻量级多智能体研究系统**，面向学习、个人研究和能力展示。它将研究问题依次经过规划、来源搜索、信息综合与报告写作，产出带来源的 Markdown 研究报告；项目刻意保持小而可读，并非生产级行动执行平台。
 
-当前版本在稳定的 ResearchOS 基础运行链之上，增加了独立、可测试的 Evidence Layer 基线：标准化文档适配、文档级证据分析契约、注入式 ResultAnalyzer 和确定性 Finding Aggregator。
+## 项目能力
 
-## 当前能力
+- **规划器（Planner）**：一次 LLM 调用生成 `ResearchPlan`，包含研究目标、搜索查询和报告大纲。
+- **搜索器（Searcher）**：通过确定性 `SearchExecutor` 执行查询、去重 URL、在固定搜索与抽取预算内获取内容，并保留来源溯源信息。
+- **P14 有界自适应搜索**：主搜索的查询覆盖不足时，最多再执行一次固定预算的补充搜索；不重新规划、不生成新查询、不循环。
+- **综合器（Synthesizer）**：基于当前搜索结果生成研究发现；可选 Evidence sidecar 只补充溯源诊断。
+- **写作器（Writer）**：按既有大纲串行生成报告章节、引用与最终报告。
+- **P15 本地词法记忆演示**：现有 SQLite、来源支持的词法记忆默认关闭；Planner 只接收有界历史上下文，Searcher 只接收有界 `site:<host>` 提示，Writer 不读取记忆。
 
-- LangGraph 工作流：`Planner → Searcher → Synthesizer → Writer`
-- LLM Provider：DeepSeek、OpenAI、Gemini、Ollama、llama.cpp
-- Searcher V2：确定性查询执行、URL 去重、搜索/提取预算、超时和重试控制
-- Search Provider Layer：统一 Provider 契约、结构化错误和 Factory
-- Tavily 搜索：推荐的默认搜索 Provider
-- Legacy Searcher：保留原 `create_agent` 搜索模式，可配置切换
-- 来源可信度评分、引用格式化和网页正文提取
-- Token、耗时和 LLM 调用记录
-- 文件缓存、内存/SQLite Checkpoint
-- CLI 与 Chainlit Web 界面
-- Evidence Layer：`SearchResult → Document → DocumentAnalysis / Evidence → Finding`
-- ResultAnalyzer：有界文本输入、content/snippet 降级、quote 验证、稳定 Evidence ID 与 partial failure 策略
-- Rule-based Finding Aggregator：按规范化 claim 聚类，过滤无效/未知来源 Evidence，并确定性计算 Finding confidence
-- 113 项无外部 API 的 pytest 回归测试
+Runtime、Trace、Usage 和 Evaluation 是辅助能力：它们记录截止时间/预算、运行轨迹、调用统计和运行后的只读指标，但不参与业务路由或自动改写研究流程。
 
-Evidence Layer 当前保持独立，尚未接入 LangGraph、State 双写、Synthesizer 或 Writer。Memory、Reflection、Supervisor 和 Evaluation 的 State 字段也仍只处于预留状态。
+P11-P13 保留为**冻结的架构探索**：质量建议、授权/资格、通用行动账本与人工审查合约仍有测试和历史价值，但不接入 Graph，也不构成自动行动或生产工作流。
 
-## 工作流程
-
-![研究工作流程](assets/flow.png)
-
-1. `ResearchPlanner` 生成研究目标、搜索查询和报告大纲。
-2. `ResearchSearcher` 使用确定性 Executor 执行查询、调用搜索 Provider、去重 URL 并提取正文。
-3. `ResearchSynthesizer` 基于搜索结果生成关键发现。
-4. `ReportWriter` 按大纲生成章节、引用来源并汇编最终报告。
-
-Evidence Layer 目前可独立调用与测试，尚不改变上述生产 Graph 拓扑：
+## 架构
 
 ```text
-SearchResult
-  -> Document Adapter
-  -> ResultAnalyzer
-  -> DocumentAnalysis + Evidence
-  -> Rule-based Finding Aggregator
-  -> Finding
+研究问题
+  |
+  v
+规划器（Planner） -----------------> 研究计划（ResearchPlan）
+  |
+  v
+搜索器（Searcher） -> 主搜索 / 抽取 -> 搜索结果（SearchResults）+ 文档（Documents）
+  |                       |
+  |                       +--> 覆盖是否不足？
+  |                              最多一次可选补充搜索
+  |                              （最多 1 次搜索 + 1 次抽取，无循环）
+  |
+  +--> 可选本地记忆 `site:<host>` 提示（仍经 SearchExecutor）
+  |
+  v
+综合器（Synthesizer） -------------> 研究发现（Findings）
+  |
+  v
+写作器（Writer） -----------------> 研究报告（Report）
+
+横切能力：Runtime / Trace / Usage / Evaluation / Memory
 ```
 
-## 环境要求
+Graph 保持固定的线性结构：`Planner -> Searcher -> Synthesizer -> Writer`。自适应搜索只位于 Searcher 内部；不会新增 Reflection 节点、Supervisor、Graph V2、重新规划，也不会改变 Writer 输入。
 
-- Python 3.11+
-- 一个可用的 LLM Provider
-- 推荐配置 Tavily API Key 用于网络搜索
+## 快速开始
 
-## 安装
+### 1. 安装环境
+
+要求：Python 3.11+，一个可用的 LLM Provider 和一个搜索 Provider。DeepSeek + Tavily 是经过手工真实展示验证的组合。
 
 ```bash
 git clone https://github.com/njiang425-hhhh/Multi-Agent-Research-System.git
@@ -57,7 +55,7 @@ cd Multi-Agent-Research-System
 python -m venv .venv
 ```
 
-Linux/macOS：
+Linux 或 macOS：
 
 ```bash
 source .venv/bin/activate
@@ -71,97 +69,37 @@ Windows PowerShell：
 pip install -r requirements.txt
 ```
 
-## 配置
-
-复制环境模板：
-
-```bash
-cp .env.example .env
-```
-
-Windows PowerShell：
+### 2. 配置 `.env`
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-推荐的 DeepSeek + Tavily + Searcher V2 配置：
+最小 DeepSeek + Tavily 配置示例：
 
 ```dotenv
 MODEL_PROVIDER=deepseek
 DEEPSEEK_API_KEY=your_deepseek_api_key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
 MODEL_NAME=deepseek-chat
-SUMMARIZATION_MODEL=deepseek-chat
 
 SEARCHER_MODE=deterministic_v2
 SEARCH_PROVIDER=tavily
 TAVILY_API_KEY=your_tavily_api_key
 
-MAX_SEARCH_QUERIES=3
-MAX_SEARCH_RESULTS_PER_QUERY=3
-MIN_CREDIBILITY_SCORE=40
-MAX_REPORT_SECTIONS=8
-CITATION_STYLE=apa
+RESEARCH_MEMORY_ENABLED=false
+SEARCHER_ADAPTIVE_ENABLED=true
+SEARCHER_ADAPTIVE_MAX_ROUNDS=1
 ```
 
-`.env` 已被 Git 忽略。不要提交任何真实 API Key。
+请妥善保管 `.env`。项目也支持 OpenAI、Gemini、Ollama 和 llama.cpp，具体 Provider 配置见 [`.env.example`](.env.example)。
 
-其他模型 Provider：
+### 3. 运行普通研究任务
 
-```dotenv
-# OpenAI
-MODEL_PROVIDER=openai
-OPENAI_API_KEY=your_openai_api_key
-MODEL_NAME=your_model_name
-
-# Gemini
-MODEL_PROVIDER=gemini
-GEMINI_API_KEY=your_gemini_api_key
-MODEL_NAME=your_model_name
-
-# Ollama
-MODEL_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434
-MODEL_NAME=qwen2.5:7b
-
-# llama.cpp
-MODEL_PROVIDER=llamacpp
-LLAMACPP_BASE_URL=http://localhost:8080
-MODEL_NAME=your_model_name
+```powershell
+.venv\Scripts\python.exe main.py "比较欧盟《人工智能法案》与当前美国联邦人工智能治理方式对企业部署的影响。"
 ```
 
-Searcher 模式：
-
-```dotenv
-# 推荐
-SEARCHER_MODE=deterministic_v2
-
-# 兼容原自主Tool Loop
-SEARCHER_MODE=legacy_agent
-```
-
-## 使用方法
-
-### CLI
-
-```bash
-# 交互模式
-python main.py
-
-# 指定主题
-python main.py "Research the development trend of LangGraph framework"
-```
-
-报告默认保存到 `outputs/`。
-
-### Chainlit Web界面
-
-```bash
-chainlit run app.py --host 127.0.0.1 --port 8000
-```
-
-### Python API
+CLI 会将报告写入 `outputs/`。也可以通过 Python API 调用：
 
 ```python
 import asyncio
@@ -169,75 +107,95 @@ from src.graph import run_research
 
 
 async def main():
-    state = await run_research(
-        topic="Research the development trend of LangGraph framework",
-        verbose=True,
-        use_cache=False,
-    )
+    state = await run_research("评估全球半导体供应链的关键韧性风险。")
     print(state.get("final_report"))
 
 
 asyncio.run(main())
 ```
 
-持久化运行可使用 `run_research_with_persistence()`、`resume_research()`、`get_workflow_state()` 和 `list_research_threads()`。
+### 4. 运行本地记忆演示
+
+这个确定性的 P15 A/B/C 演示只使用本地 fake 与 SQLite；不会调用 LLM、搜索 Provider、网页或 Graph。
+
+```powershell
+.venv\Scripts\python.exe scripts\run_memory_demo.py
+```
+
+演示包含：已完成的 Run A 写入来源支持的记忆、相关的 Run B 检索记忆并生成站点提示，以及无关的 Run C 不产生错误命中。可传入 `--store-path .cache\memory-demo\memory.db` 保留 SQLite 文件。
+
+### 5. 运行真实展示集
+
+P16 手工 runner 会顺序执行四个固定的 DeepSeek + Tavily 任务，并在 `artifacts\showcase\<时间戳>\` 中生成 `summary.json`、`summary.md`、每个 case 的 JSON 与报告 Markdown。
+
+```powershell
+.venv\Scripts\python.exe scripts\run_showcase.py
+```
+
+如需只对一个指定 case 显式启用既有的本地词法记忆：
+
+```powershell
+.venv\Scripts\python.exe scripts\run_showcase.py --case comparison-ai-governance --memory-case comparison-ai-governance
+```
+
+真实 Provider 调用只供手工执行，不会进入 CI。runner 会将失败保留为观测结果并继续其余 case；Evaluation 始终只读，绝不会成为运行时门禁。
+
+## P16 展示集快照
+
+当前工作区中 `2026-08-23` 的 archive 位于 [`artifacts/showcase/20260823T125821Z/`](artifacts/showcase/20260823T125821Z/)，其中记录了四个真实 DeepSeek + Tavily 运行：
+
+| 任务 | 类别 | 结果 | 耗时 | 自适应搜索观测 |
+|---|---|---|---:|---|
+| `comparison-ai-governance` | 对比 | 完成 | 354.711 秒 | 触发一次；无进展 |
+| `evidence-clinical-ai-screening` | 证据研究 | 失败 | 175.527 秒 | 不需要 |
+| `risk-regulated-ai-agents` | 风险与实施 | 完成 | 290.570 秒 | 不需要 |
+| `trend-ai-semiconductor-supply` | 趋势与行业 | 完成 | 275.457 秒 | 触发一次；无进展 |
+
+观测摘要：**3 个完成 / 1 个失败**。两次自适应搜索都严格限制在一轮内，且没有带来新增进展。四个 case 的 source coverage 均通过；三个完成报告的 report completeness 均通过。由于可选 Evidence sidecar 保持关闭，完成报告的 grounded-citation 为 failed，Writer 截止时间失败的 case 则为 unavailable。
+
+这些是 P5/P9/P10 只读评估产生的观测/archive 指标，不代表事实质量、Provider 质量、稳定时延或生产就绪承诺。
+
+## 已知限制
+
+- Writer 可能耗尽既有 Runtime operation deadline；P16 中包含一个已观测到的 Writer 截止时间失败。
+- Evidence 默认关闭，因此没有现有 Evidence records 时，不应期待 grounded-citation 指标通过。
+- Memory 是本地、词法、来源支持、有界且默认关闭的能力；它不是语义/向量记忆、个性化能力，也不作为 Writer 输入。
+- 自适应搜索最多只有一轮补充搜索/抽取，且允许正确结束为无进展。
+- 默认展示使用单一 Provider 组合；没有 Provider fallback 或 circuit breaker。
+- Graph V1 是固定线性结构；没有 Supervisor、branch/join、重新规划、Reflection 节点或 Graph V2。
+
+## 验证
+
+仅使用 fake 输入的测试不会调用真实 LLM、Provider 或网页：
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q --basetemp .pytest-local
+git diff --check
+```
+
+当前发布基线：**364 passed，2 个既有 Pydantic deprecation warnings**。P16 真实展示集仅手工执行；其 archive 会保留实际的完成、无进展和失败结果，而不会掩盖它们。
 
 ## 项目结构
 
 ```text
-Multi-Agent-Research-System/
-├── src/
-│   ├── agents.py                 # Planner/Searcher/Synthesizer/Writer
-│   ├── graph.py                  # LangGraph Workflow
-│   ├── state.py                  # ResearchState V1契约
-│   ├── config.py                 # 项目配置
-│   ├── llm/
-│   │   └── factory.py            # LLM Provider Factory
-│   ├── search/
-│   │   ├── config.py             # Search Runtime Config
-│   │   ├── executor.py           # Deterministic SearchExecutor
-│   │   └── providers/
-│   │       ├── base.py           # SearchProvider接口
-│   │       ├── errors.py         # 结构化Provider异常
-│   │       ├── factory.py        # SearchProviderFactory
-│   │       ├── models.py         # ProviderSearchResult
-│   │       └── tavily.py         # TavilyProvider
-│   ├── evidence/
-│   │   ├── adapters.py            # SearchResult -> Document
-│   │   ├── models.py              # DocumentAnalysis、Evidence、AnalysisResult
-│   │   ├── service.py             # 注入式 ResultAnalyzer
-│   │   ├── finding_models.py      # Finding 聚合契约
-│   │   └── aggregation.py         # 确定性 Finding Aggregator
-│   ├── prompts/                  # Agent提示词
-│   └── utils/                    # Tools、缓存、引用和网页处理
-├── app.py                        # Chainlit入口
-├── main.py                       # CLI入口
-├── .env.example                  # 安全配置模板
-├── requirements.txt
-└── pyproject.toml
+src/
+  agents.py                    规划器 / 搜索器 / 综合器 / 写作器
+  graph.py                     固定 Graph V1 runner 与生命周期边界
+  runtime_control.py           截止时间、预算、重试、取消、租约合约
+  search/                      SearchExecutor、覆盖辅助函数与 Provider
+  memory/                      本地 SQLite 词法记忆与确定性演示
+  evaluation/                  只读 P5/P9/P10/P16 评估与 archive
+  action_execution.py          冻结的 P13 架构探索
+  human_review.py              冻结的 P13 架构探索
+scripts/
+  run_memory_demo.py           P15 仅本地确定性演示
+  run_showcase.py              P16 手工 DeepSeek + Tavily archive runner
+artifacts/showcase/            手工 P16 archive
+tests/                         仅使用 fake 输入的回归测试集
 ```
 
-## 已验证运行链
+有关架构合约、里程碑决策、历史验证和未来边界，见 [`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md)。
 
-当前 DeepSeek + Tavily + Deterministic Searcher V2 配置已完成完整回归测试：
+## 致谢
 
-```text
-Planner → Searcher → Synthesizer → Writer → final_report
-```
-
-测试中成功生成搜索结果、关键发现、8个报告章节和最终 Markdown 报告。
-
-## 测试与开发检查
-
-```bash
-python -m pip check
-pytest -q tests
-```
-
-当前测试覆盖 State 兼容、LLM Factory、Search Runtime、Tavily Provider、Tool Adapter、Evidence 模型与 Adapter、ResultAnalyzer，以及 Finding 聚合基线；全部使用 fake 输入，不调用真实 LLM、Provider 或网页。
-
-新增搜索 Provider 时，实现 `src/search/providers/base.py` 中的 `SearchProvider` 接口，并在 `SearchProviderFactory` 注册。Provider异常必须使用结构化异常，不能将网络故障转换为正常空列表。
-
-## Acknowledgements
-
-本项目使用 LangGraph、LangChain、Chainlit、Tavily、DeepSeek、httpx、Beautiful Soup 和 DDGS 等开源项目与服务。
+ResearchOS 使用了 LangGraph、LangChain、Chainlit、Tavily、DeepSeek、httpx、Beautiful Soup 和 DDGS。

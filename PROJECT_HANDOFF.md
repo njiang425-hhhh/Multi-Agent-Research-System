@@ -2,7 +2,7 @@
 
 > 本文是下一会话唯一交接基线；若与历史 handoff、提交记录或旧测试结论冲突，以当前源码和本文为准。
 >
-> 最后更新：2026-08-23。ResearchOS 是轻量级、个人/学习/展示型 multi-agent research project。P0-P10 已正式关闭；P11-P13 作为 Advanced Architecture Exploration 已完成并冻结。没有自动 action dispatch 或生产 rollout。
+> 最后更新：2026-08-23。ResearchOS 是轻量级、个人/学习/展示型 multi-agent research project。P0-P17 已关闭；P11-P13 作为 Advanced Architecture Exploration 已完成并冻结。没有自动 action dispatch 或生产 rollout。
 
 ## 目录
 
@@ -44,24 +44,19 @@ ResearchOS 是一个 **lightweight multi-agent research project**，面向个人
 |---|---|
 | 项目定位 | **轻量级、个人/学习/展示型 Multi-Agent Research System**；不以 enterprise production readiness 为目标。 |
 | 核心研究能力 | 面向来源的研究 Agent：把用户 Query 转为结构化计划、搜索来源、综合 Findings 和带引用的 Report，同时保持 runtime、provenance 与 Evaluation 边界。 |
-| 当前阶段 | P0-P10 Foundation / Research Quality 已关闭。P11-P13 是已完成、冻结的 Advanced Architecture Exploration，不要求 productionize。主线转向 P14-P17 capability closure。 |
+| 当前阶段 | P0-P17 已关闭。P11-P13 是已完成、冻结的 Advanced Architecture Exploration，不要求 productionize；P14/P15 完成 bounded adaptive research 与 local memory showcase，P16 完成真实 archive showcase，P17 完成 release documentation/cleanup。 |
 | Graph | 固定线性 Graph V1：`Planner -> Searcher -> Synthesizer -> Writer`。现有 router、Writer 输入、legacy 主链和 Report contract 不变。 |
 | Provider / Search | 当前默认运行组合：DeepSeek + Tavily + `deterministic_v2`。`SearchExecutor` 拥有确定性 search 与 round-robin-by-query extraction ordering；`legacy_agent` 仅显式兼容。 |
-| 默认开关 | `EVIDENCE_ANALYZER_ENABLED=false`；`RESEARCH_MEMORY_ENABLED=false`；`WRITER_SECTION_EXECUTION_MODE=serial`。Writer `bounded` 需显式开启，实验 bound 默认 `2`。 |
-| 测试基线 | fake-only 全量：**343 passed，2 个既有 Pydantic deprecation warnings**。CI 使用 Python 3.11 与固定 pytest `--basetemp`；真实 provider 验证仅手工执行，不进 CI。 |
+| 默认开关 | `EVIDENCE_ANALYZER_ENABLED=false`；`RESEARCH_MEMORY_ENABLED=false`；`WRITER_SECTION_EXECUTION_MODE=serial`；`SEARCHER_ADAPTIVE_ENABLED=true`，但 hard cap 固定为 1 round。Writer `bounded` 需显式开启，实验 bound 默认 `2`。 |
+| 测试基线 | fake-only 全量：**364 passed，2 个既有 Pydantic deprecation warnings**。CI 使用 Python 3.11 与固定 pytest `--basetemp`；真实 provider 验证仅手工执行，不进 CI。 |
 | Advanced experiment | P11 advisory、P12 eligibility、P13 ledger/human-review handler 展示治理设计能力；仍保持 contract-only/default-off，不是项目的核心产品路径。 |
-| 下一步 | P14 Light Reflection / Adaptive Research、P15 Memory Demo Activation、P16 End-to-End Showcase & Evaluation、P17 Documentation / Cleanup / Release，然后 DONE。 |
+| 下一步 | **DONE**。后续仅按 Optional Future / Productionization 中的独立需求重新立项。 |
 
 ## Current Decision Point
 
 **主线已经从治理执行探索切回 Agent capability。** P11.1、P12.1、P13.1 与 P13.2 作为 **Advanced Architecture Exploration** 已完成并冻结：它们保留为可阅读、可测试的 contract/control-plane 示例，但不继续推进为 production human-review workflow、企业审批系统或自动 action 平台。
 
-当前按以下顺序推进：
-
-1. **P14 Light Reflection / Adaptive Research**：在 Graph V1 与 Runtime ownership 内，定义一个轻量、bounded、可终止的研究自适应能力；不引入 Supervisor、自动 replan 或任意 action execution。
-2. **P15 Memory Demo Activation**：以 P8 local/default-off memory 为基础，做可演示的受限 activation 与效果观察；不升级为 semantic/vector 或个人化记忆系统。
-3. **P16 End-to-End Showcase & Evaluation**：完成 3-5 个真实 showcase tasks，并保留 planning、coverage、report evaluation 的可复现 archive。
-4. **P17 Documentation / Cleanup / Release**：完善 README、architecture、quick start、demo 和回归说明，完成展示型 release。
+核心 capability closure 已完成。README、handoff、demo 和 manual showcase entry points 已统一到当前的 lightweight research showcase 定位；后续不再有主线 backlog。
 
 保持现有护栏：Graph V1、router、Writer input、legacy contracts 与 Runtime ownership 不变；Evaluation 继续 read-only，不能成为 production gate。P13 的 runner production integration、RBAC、approval SLA、enterprise audit 与 rollout 统一移入 Optional Future / Productionization。
 
@@ -95,6 +90,7 @@ CLI / Chainlit / Runner
         |      |
         |      +--> deterministic_v2 SearchExecutor --> Provider / Tools（DeepSeek/Tavily）
         |      +--> 可选 Memory provenance `site:<host>` hints（仍经 SearchExecutor）
+        |      +--> P14 coverage 不足时最多一次 supplementary search（仍经 SearchExecutor）
         |
         +--> Synthesizer --------------- Findings + 可选 Evidence sidecar
         |      |
@@ -157,13 +153,13 @@ Cross-cutting：
 | Evidence sidecar | Implemented | Disabled | P5/P6 不足以支持默认启用或 selector。 |
 | Writer serial scheduling | Implemented | Enabled | 展示默认保持 serial。 |
 | Writer bounded sections | Implemented | Experimental | 显式 `bounded`，默认 bound=2；P7 仅证明本地 Writer 加速。 |
-| Research Memory V1 | Implemented | Disabled | SQLite/lexical/provenance baseline；P15 将把它作为可解释的 demo 能力激活。 |
+| Research Memory V1 | Implemented | Disabled | SQLite/lexical/provenance baseline；P15 提供显式 local fake demo 与启用时 diagnostics，普通 run 默认关闭。 |
 | Planning Enhancement | Implemented | Enabled（既有 Planner 内） | P9 是 prompt/normalization + fake-only lexical baseline；不证明真实 provider 质量。 |
 | Offline Evaluation / calibration / repeatability | Implemented | Offline only | read-only；snapshot 绑定 evaluator、config 与 dataset content。 |
 | P10 Research Coverage | Implemented | Enabled inside deterministic_v2 | extraction candidates 按 originating query round-robin；不增加预算，不改 Graph/router/Writer/runtime ownership。 |
-| P14 Light Reflection / Adaptive Research | Next | N/A | 轻量、bounded、可终止；先服务 research showcase，不启动 Supervisor 或 enterprise action runtime。 |
-| P16 Showcase & Evaluation | Planned | N/A | 3-5 个真实任务、可复现 archive、端到端展示。 |
-| P17 Documentation / Release | Planned | N/A | README、architecture、quick start、demo、cleanup。 |
+| P14 Light Reflection / Adaptive Research | Implemented | Enabled | Searcher 内 primary coverage 后最多一次 supplementary search；不改 Graph、Writer 或 Runtime ownership。 |
+| P16 Showcase & Evaluation | Closed | Manual only | 4 个固定真实任务、per-case archive、P14/P15 diagnostics 与 P5/P9/P10 read-only evaluation。 |
+| P17 Documentation / Release | Closed | N/A | README、architecture、quick start、demo、showcase snapshot、cleanup 与 release notes。 |
 
 ### Advanced Architecture / Future
 
@@ -249,6 +245,8 @@ P10.2 observed after baseline：
 - P8 memory 只作 prior context：不能替代当前 Query/objectives、充当最终 citation、绕过 `SearchExecutor` 或直接进入 Writer。
 - P9 必须保持一次 Planner LLM call；normalization 只清理/去重/标记已有条目，不得凭空生成 objectives、queries、sections、Agent 或 Graph node。
 - Trace 是 append-only observation，不拥有 Usage/routing；Usage 每个真实 LLM attempt 仅计一次；Evaluation 是 deterministic/read-only，除非单独批准不得成为生产 gate。
+- P14 只在 Searcher 内进行一次 deterministic coverage check；supplementary search 固定最多 `1 search + 1 extract`、retry=0、local timeout<=30s，复用剩余 Runtime context。它不 replan、不新增 query/objective/outline、不改 Graph/router/Writer input；无新 URL/content/coverage、timeout/error 或 Runtime 容量不足只进 `search_diagnostics`，继续 primary 输出。
+- P15 只观察既有 P8 local lexical memory：默认 `RESEARCH_MEMORY_ENABLED=false`；启用时 `memory_diagnostics` 记录 retrieved IDs、score/matched terms/provenance、Planner context 与 Searcher site hints，显式 demo 记录 write count。它不进入 Writer、不改 Graph/router/top-level error，也不构成 vector/semantic/personalized Memory V2。
 - 不得从单个真实样本或 fake-only 结果推导生产策略；后续决策必须保留 observed/derived 区分和 archive 路径。
 
 ## Milestone Map
@@ -269,10 +267,10 @@ P10.2 observed after baseline：
 | Governance Exploration | P11.1 | Frozen | QualitySignal/ThresholdSpec/SignalProvenance/ActionRecommendation；deterministic advisory matrix | Evaluation-only；不写 State、不自动执行 action。 |
 | Governance Exploration | P12.1 | Frozen | ActionAuthorization/Eligibility/Target/Budget/policies/provenance；validators 与 future transition rules | Contract-only；不接入自动 action。 |
 | Governance Exploration | P13.1-P13.2 | Frozen | ledger/CAS/recovery 与 default-off human-review handler/resume-adapter contract | 不做 production runner integration、enterprise approval 或 dispatch。 |
-| Capability Closure | P14 | **Next** | Light Reflection / Adaptive Research：Graph V1 内 bounded、可终止的适应性研究能力 | 不引入 Supervisor、Graph V2 或 arbitrary action execution。 |
-| Capability Closure | P15 | Planned | Memory Demo Activation：激活 P8 local lexical memory 及 provenance 边界 | 不做 semantic/vector memory。 |
-| Capability Closure | P16 | Planned | 3-5 个真实 research showcase tasks、可复现 evaluation/archive | 展示与学习，不形成 production gate。 |
-| Capability Closure | P17 | Planned | README、architecture、quick start、demo、cleanup、release notes | 完成后进入 **DONE**。 |
+| Capability Closure | P14 | Closed | Searcher 内一次 coverage-triggered supplementary search，primary-first merge/dedup 与 diagnostics | 不引入 Supervisor、Graph V2、replan 或 action execution。 |
+| Capability Closure | P15 | Closed | explicit local fake A/B/C demo、memory observability 与 SQLite connection cleanup | 保持 default-off；不做 semantic/vector/personalized memory。 |
+| Capability Closure | P16 | Closed | 4 个真实 research showcase tasks、可复现 per-case evaluation/archive | 展示与学习，不形成 production gate；真实 failure 也保留为 observation。 |
+| Capability Closure | P17 | Closed | README、architecture、quick start、demo、cleanup、release notes | **DONE**；不把冻结 exploration 或 Optional Future 重新放回主线。 |
 
 ## Detailed History / Appendix
 
@@ -414,6 +412,49 @@ P10.2 observed after baseline：
 - P13.2 validation：targeted `tests/test_human_review.py tests/test_action_execution.py tests/test_action_authorization.py tests/test_quality_action.py` = `53 passed, 1 warning`；full fake-only pytest = `343 passed, 2 warnings`。覆盖 approve/reject、identical/conflicting approval、stale authorization/checkpoint、deadline/cancel、waiting/approval recovery、duplicate resume、lease conflict/loss、terminal reopen suppression、role/scope、approved-before-resume no external call。
 - P13.2 closure recommendation：可以关闭 fake-only/default-off handler sub-phase；**不**可关闭 P13 production action readiness。继续保持 Graph V1，不实现 `retry_research`、replan、Reflection、Supervisor、Graph V2 或 provider fallback。生产前仍需真实 runner integration、authenticated approver identity/role source、audit retention/privacy、approval SLO、timeout/cancel/lease failure drill、at-least-once recovery 与 real-workflow calibration。
 
+### M. P14 Light Reflection / Adaptive Research Closure
+
+- `ResearchSearcher._search_with_executor()` 保持 Graph V1 的单个 Searcher node：`primary search -> pure query coverage -> optional supplementary search -> primary-first merge/dedup -> existing credibility/documents -> Synthesizer/Writer`。没有 Reflection node、Graph/router 改动、Supervisor、replan、LLM query generation、P11-P13 action framework 或 Graph V2。
+- 新增 `src/search/coverage.py` 的 deterministic pure helper。它仅按既有 `ResearchPlan.search_queries` 与 `SearchResult`/`Document` 的 normalized query association 计算 `result_query_coverage`、`extracted_query_coverage` 和按原 plan 顺序的 missing query lists；不导入 Evaluation，也不让 P10 evaluator 变成 runtime gate。
+- Trigger 需要 primary 有可用 URL、result 或 extraction coverage 小于 `1.0`、`SEARCHER_ADAPTIVE_ENABLED=true`、round cap 仍为 1，且 shared Runtime context 尚有 deadline/operation budget。query 优先首个 missing result query，否则首个 missing extracted query；直接复用原 `SearchQuery.query`，不修改 plan。
+- supplementary executor 固定 `max_search_times=1`、`max_extract_times=1`、retry=0、`total_timeout_seconds<=30`，并沿用 primary 后的 `ExecutionContext`，因此不会重置或扩大 Runtime deadline/budget。`SEARCHER_ADAPTIVE_MAX_ROUNDS` 只能是 0 或 1，生产硬上限仍是 1。
+- `SearchExecutor.execute(..., exclude_urls=...)` 在 provider 返回后按 normalized URL 过滤 primary 已见 URL，使其不会进入 supplementary result/extract candidates。merge 保留 primary 顺序与 metadata；supplement 仅追加新 normalized URL，或在 primary 缺 content 时补 content。随后仍走已有 credibility scoring 与 document projection。
+- `search_diagnostics` 保存 adaptive observation，不写 `llm_call_details`，不改变 Usage。duplicate-only/no new content/no coverage improvement、supplement timeout/error、或 Runtime capacity 不足都只标记 no-progress/failure/skip diagnostics，保持 primary 输出并且绝不发起第二轮。
+- Observed fake examples：`alpha,beta` primary 仅覆盖 `alpha` 时，result/extracted coverage `0.5 -> 1.0`，一次 supplement `beta` 后进入既有流程；`alpha,beta,gamma` 时 supplement 后仍有 `gamma` missing，但 search calls 固定为 primary+supplement 两次，不启动第三轮。
+- P14 validation：targeted `tests/test_search_adaptive.py tests/test_search_executor.py tests/test_searcher_documents.py tests/test_search_config.py tests/test_agent_trace.py tests/test_writer_report_migration.py` = `55 passed, 1 warning`；full fake-only pytest = `355 passed, 2 warnings`；`git diff --check` clean。覆盖 all-covered no supplement、missing result/extraction、still-missing no second round、primary-first content upgrade、seeded dedup/no-progress、no-content supplement、supplement failure、Runtime budget skip，以及 Graph V1/Writer trace contract regression。
+- P14 closure recommendation：**closed / GO** for lightweight showcase capability. 不将 fake-only coverage improvement 推导为真实 provider quality，也不扩展为 autonomous action 或 production retry platform。
+
+### N. P15 Memory Demo Activation Closure
+
+- P15 复用 P8 contracts：source-backed records 仍只由 completed run 投影并 best-effort 写入本地 SQLite；Planner 只获得 bounded prior context，Searcher 只追加 bounded `site:<host>` hints 且仍经 `SearchExecutor`；Writer 不读取 memory；read/write failure 非致命。没有 Memory Agent、Graph/router 改动、vector DB/embeddings、semantic retrieval、personalization 或 top-level error 语义变化。
+- 默认仍为 `RESEARCH_MEMORY_ENABLED=false`。显式入口是 `& .\.venv\Scripts\python.exe scripts\run_memory_demo.py`；它只执行 deterministic/local fake A/B/C showcase，不调用 LLM、Provider、网页或 Graph，也不会开启普通 research run 的 Memory。`--store-path` 可保留 demo SQLite；默认临时文件会清理。
+- 启用 Memory 时，`memory_diagnostics` 记录 retrieval outcome、retrieved count/IDs、每条 lexical score/matched terms/grounding/provenance、Planner context IDs、Searcher hint query/count；显式 demo 的 Run A 记录 write count/IDs。该字段不进 Writer、Usage 或 routing。P8 SQLite store 同时修正为每次操作提交并关闭 connection，避免 Windows demo temporary DB 被锁。
+- Observed fake demo：Run A 写入 `1` 条 source-backed record；related Run B `AI regulation enforcement risk tiers` 检索 `1` 条（score `1.0`，matched `ai/enforcement/regulation/risk/tiers`，`legacy_source_url` provenance），Planner context 使用该 ID，Searcher 产生一个 `site:eu.example` hint；unrelated Run C `coastal flood adaptation planning` 检索 `0` 条。memory-off 的 retrieved/context/hint 都为 `0`/empty。固定 fake plan 的 planned-query overlap 为 `1.0`、novelty 为 empty，result/extracted coverage delta 均为 `0.0`；这只证明 injection/provenance 观察路径，不代表真实 provider、规划或报告质量提升。
+- P15 validation：targeted `tests/test_memory_demo.py tests/test_research_memory.py tests/test_search_adaptive.py tests/test_v1_task_plan_migration.py tests/test_usage_migration.py` = `31 passed, 1 warning`；full fake-only pytest = `361 passed, 2 warnings`；`git diff --check` clean。覆盖 completed write/incomplete skip、related retrieval、unrelated no-overmatch、retrieval limit、Planner retrieval/context diagnostics、Searcher hint-through-executor、read failure nonfatal、memory-off 无 injection，以及 demo A/B/C output。
+- P15 closure recommendation：**closed / GO** for optional local-memory showcase. 不将 fake-only score/coverage observations 外推为语义记忆能力或真实质量改善。
+
+### O. P16 End-to-End Showcase & Evaluation Closure
+
+- 新增 `src/evaluation/showcase.py` 与 `scripts/run_showcase.py`。固定四个展示任务覆盖 comparison（EU AI Act 与美国联邦 AI governance）、evidence/research（AI-assisted mammography）、risk/implementation（regulated enterprise customer-support agents）和 trend/industry（AI data-center semiconductor supply chains）；按顺序调用既有 Graph V1 `run_research`，cache disabled、checkpoint enabled。没有新 Agent、Graph/router/Writer/Runtime 改动、provider fallback、replan、Supervisor、Memory V2 或 production gate。
+- `run_showcase` 接受 injected runner，单个 case 发生异常时写出 failed state observation 后继续其他 case。每个 archive record 保存 input、ResearchPlan、executed queries、SearchResult/Document、findings/report/citations、Trace/Usage、wall time/status/error、P14 adaptive diagnostics、P15 memory diagnostics 和 P5/P9/P10 evaluator outputs。`archive_showcase` 写 `artifacts/showcase/<timestamp>/summary.json`、`summary.md` 及 `cases/<case>.json`、`cases/<case>.report.md`；JSON 是 source of record。
+- P5 `evaluate_run`、P9 `evaluate_planning_quality` 和 P10 `evaluate_research_coverage` 都在 run 后对 copied State 只读执行；P16 static lexical facets / quality rubric 只用于 archive observation，绝不是 runtime gate、provider quality conclusion 或改进 request。P5 grounded-citation 仍要求 existing Evidence records；默认 Evidence sidecar disabled 时该 metric 的 failed/unavailable 是预期可观察结果，不由 showcase 修复。
+- Memory 默认 off。CLI 只有 `--memory-case <selected-case>` 才在 exactly one case 上暂时启用既有 P8 SQLite memory 并使用 archive-local DB；Runner finally 恢复 config。实际 P16 round 未选择 memory case，四项 retrieved/context/site-hint 均为 0/empty；P15 local fake A/B/C 保留为 dedicated memory demonstration。
+- Actual manual DeepSeek + Tavily round archive：`artifacts/showcase/20260823T125821Z/`。4 cases all executed: comparison `completed` (354.711s), clinical evidence `failed` (175.527s, existing Writer `Operation deadline exhausted`), risk/implementation `completed` (290.570s), trend/industry `completed` (275.457s). This is observed reliability data, not a retry or a production recommendation.
+- Actual adaptive observations: comparison and trend each triggered the hard-capped single supplementary search because extracted query coverage was `0.666667` while result coverage was `1.0`; both supplementary Tavily searches returned no result, kept `0.666667 -> 0.666667`, and correctly recorded `no_progress` without a second round. Clinical and risk cases were `not_needed` at primary result/extraction coverage `1.0/1.0`.
+- Actual P5/P9/P10 archive observations: all four had P5 `source_coverage=passed`; completed comparison/risk/trend had `report_completeness=passed` while clinical was unavailable after Writer failure. Grounded citation was failed for completed cases (Evidence sidecar default off) and unavailable for clinical. P10 result coverage was `1.0` for all; P10 extracted coverage was comparison `0.75` and all other cases `1.0`. P9 lexical facets had mixed scores, so they remain descriptive prompt/plan observations rather than acceptance criteria.
+- P16 validation: targeted `tests/test_showcase.py` = `3 passed, 1 warning`; full fake-only pytest = `364 passed, 2 warnings`; `git diff --check` clean. Tests cover deterministic archive shape, per-case reports, P5/P9/P10 post-run output, read-only input, adaptive/memory observation capture, default memory-off, one selected memory case, and failure isolation/secret redaction.
+- P16 closure recommendation：**closed / GO** for the lightweight showcase. The archive proves end-to-end observability and preserves actual failure/no-progress behavior; it does not prove provider quality, sufficient evidence grounding, stable latency, or production readiness. P17 documentation/cleanup/release subsequently closed the mainline.
+
+### P. P17 Documentation / Cleanup / Release Closure
+
+- README 已重构为展示型入口：明确 lightweight multi-agent research system 定位、Planner/Searcher/Synthesizer/Writer 主链、P14 one-round adaptive search、P15 local lexical memory demo、Runtime/Trace/Usage/Evaluation 辅助边界，以及 P11-P13 frozen architecture exploration。新的 text architecture 图同时展示 primary search、optional supplementary search、optional memory hints 和 cross-cutting concerns；不暗示 Graph V2、Supervisor、replan 或 action execution。
+- Quick Start 已覆盖 Python 环境、`.env` 的最小 DeepSeek + Tavily 配置、普通 CLI/API research run、deterministic local memory demo 和 manual P16 showcase runner（含 exactly-one memory case opt-in）。所有真实 provider 调用仍明确标为 manual-only，Evaluation 仍是 post-run/read-only。
+- README 写入 P16 `artifacts/showcase/20260823T125821Z/` 的 observed snapshot：4 cases executed、3 completed/1 existing Writer operation-deadline failure、2 adaptive triggers/both no-progress、all source coverage passed、completed report completeness passed、Evidence default-off 导致 grounded-citation failed/unavailable。该表和 metrics 明确不是 provider/factual-quality、latency 或 production readiness 结论。
+- Cleanup audit：移除了 README 中过期的“Evidence/Memory/Evaluation only reserved”、113-test baseline、旧项目能力列表和未接入 Evidence 描述；检查 `PROJECT_HANDOFF.md`、`scripts/run_memory_demo.py`、`scripts/run_showcase.py`，没有遗留将 P11-P13 推进为 production action、将 P16 作为 future work，或与 current default-off Memory/read-only Evaluation 语义冲突的入口。P11-P13 modules/tests、P5-P13 history 和 Optional Future 表保留，因为它们仍有测试覆盖和架构阅读价值。
+- P17 不改 Graph/router、Writer input、Runtime ownership、provider policy、feature flags 或 State contracts；不新增功能。
+- Final validation: full fake-only pytest = `364 passed, 2 warnings`; `git diff --check` clean. 建议 release commit message：`feat: complete ResearchOS showcase release`; 建议 tag/version：`v1.0.0-showcase`。
+- P17 closure recommendation：**closed / GO / DONE**。ResearchOS 现在是可展示、可复现、可阅读的 lightweight multi-agent research project；未来工作只在出现明确新需求时从 Optional Future / Productionization 独立立项。
+
 ## Optional Future / Productionization
 
 以下内容不是 P14-P17 backlog，也不是项目收尾条件。它们只在未来出现明确的 Agent/showcase 需求，或有人选择把项目独立 productize 时重新评审：
@@ -436,7 +477,7 @@ P10.2 observed after baseline：
 - router early termination 后 callback/UI 一致性。
 - `legacy_agent` 的最终退役或受限再接入方案。
 
-## 下一会话启动
+## Future Maintenance Session
 
 ```powershell
 git status --short --branch
@@ -444,4 +485,4 @@ git log -3 --oneline --decorate
 & .\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest-local
 ```
 
-开始任何实现前，重确认以上 guardrails：不改 Graph/router/Writer-input/legacy fields；显式 double-write、Evidence failure isolation、runtime ownership、Evaluation read-only boundary 均不得退化。
+如独立 future work 被批准，开始前重确认以上 guardrails：不改 Graph/router/Writer-input/legacy fields；显式 double-write、Evidence failure isolation、runtime ownership、Evaluation read-only boundary 均不得退化。

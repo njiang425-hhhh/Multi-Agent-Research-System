@@ -232,10 +232,42 @@ def memory_record_to_item(record: ResearchMemoryRecord, *, score: float | None =
             "evidence_refs": list(record.evidence_refs),
             "document_refs": list(record.document_refs),
             "grounding_level": record.grounding_level,
+            "provenance": dict(record.provenance),
             "expires_at": record.expires_at,
         },
         created_at=record.created_at,
     )
+
+
+def memory_retrieval_items(
+    query: str,
+    matches: Sequence[tuple[ResearchMemoryRecord, float]],
+) -> tuple[list[MemoryItem], list[dict[str, Any]]]:
+    """Project lexical retrieval results with deterministic demo observations."""
+
+    query_tokens = tokenize_for_memory(query)
+    items: list[MemoryItem] = []
+    observations: list[dict[str, Any]] = []
+    for record, score in matches:
+        matched_terms = sorted(query_tokens & tokenize_for_memory(record_search_text(record)))
+        item = memory_record_to_item(record, score=score)
+        item.metadata = {
+            **item.metadata,
+            "retrieval_score": score,
+            "matched_terms": matched_terms,
+        }
+        items.append(item)
+        observations.append(
+            {
+                "memory_id": record.memory_id,
+                "retrieval_score": score,
+                "matched_terms": matched_terms,
+                "grounding_level": record.grounding_level,
+                "source_refs": list(record.source_refs),
+                "provenance": dict(record.provenance),
+            }
+        )
+    return items, observations
 
 
 def _memory_source_refs(item: MemoryItem | Mapping[str, Any]) -> list[str]:

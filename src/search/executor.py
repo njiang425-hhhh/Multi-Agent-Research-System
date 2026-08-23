@@ -50,13 +50,23 @@ class SearchExecutor:
         queries: Sequence[QueryInput],
         max_results_per_search: Optional[int] = None,
         execution_context: Optional[ExecutionContext] = None,
+        exclude_urls: Optional[Sequence[str]] = None,
     ) -> SearchExecutionResult:
-        """Run bounded searches followed by bounded content extraction."""
+        """Run bounded searches followed by bounded content extraction.
+
+        ``exclude_urls`` seeds URL de-duplication after provider search results
+        arrive. Providers still receive the requested query, while known URLs
+        neither enter the returned result list nor consume extraction budget.
+        """
 
         stats = SearchExecutionStats()
         results: list[SearchResult] = []
         seen_queries: set[str] = set()
-        seen_urls: set[str] = set()
+        seen_urls = {
+            normalized
+            for url in (exclude_urls or ())
+            if (normalized := self._normalize_url(str(url)))
+        }
         started = time.perf_counter()
         last_error: Optional[str] = None
         timed_out = False

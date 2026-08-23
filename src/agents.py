@@ -1,6 +1,7 @@
 """带依赖注入的研究流程代理节点。"""
 
 import asyncio
+from copy import copy
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Dict, Any, Protocol, Literal
 import logging
@@ -38,7 +39,8 @@ from src.execution_policy import ExecutionContextCoordinator
 from src.exceptions import PlanningError, SearchError, SynthesisError, ReportGenerationError
 from src.search.config import SearchConfig
 from src.search.executor import SearchExecutor
-from src.evidence.adapters import scored_search_results_to_documents
+from src.search.coverage import SearchCoverage, measure_search_coverage
+from src.evidence.adapters import normalize_web_url, scored_search_results_to_documents
 from src.evidence.compat import key_findings_to_findings
 from src.evidence.config import EvidenceRuntimeConfig
 from src.evidence.sidecar import EvidenceSidecarResult, EvidenceSidecarService
@@ -46,7 +48,7 @@ from src.memory import (
     ResearchMemoryStore,
     build_search_memory_hints,
     format_planner_memory_context,
-    memory_record_to_item,
+    memory_retrieval_items,
 )
 from src.planning import normalize_research_plan
 from src.prompts import (
@@ -72,6 +74,10 @@ logger = logging.getLogger(__name__)
 SEARCHER_AGENT_RECURSION_LIMIT = 12
 SEARCHER_AGENT_TIMEOUT_SECONDS = 90
 LLM_OPERATION_TIMEOUT_SECONDS = 90
+SEARCHER_ADAPTIVE_MAX_ROUNDS = 1
+SEARCHER_ADAPTIVE_TIMEOUT_SECONDS = 30.0
+SEARCHER_ADAPTIVE_MAX_SEARCH_CALLS = 1
+SEARCHER_ADAPTIVE_MAX_EXTRACT_CALLS = 1
 
 
 def _default_memory_store() -> ResearchMemoryStore:
@@ -81,27 +87,54 @@ def _default_memory_store() -> ResearchMemoryStore:
     )
 
 
-def _retrieve_memory_items(
+def _retrieve_memory_items_with_diagnostics(
     store: ResearchMemoryStore | None,
     query: str,
-) -> list[MemoryItem]:
+) -> tuple[list[MemoryItem], dict[str, Any]]:
     if (
         not config.research_memory_enabled
         or config.research_memory_retrieval_limit <= 0
         or store is None
     ):
-        return []
+        return [], {
+            "enabled": bool(config.research_memory_enabled),
+            "retrieval_outcome": "disabled_or_unavailable",
+            "retrieved_count": 0,
+            "retrieved_memory_ids": [],
+            "retrieval": [],
+        }
     try:
-        return [
-            memory_record_to_item(record, score=score)
-            for record, score in store.retrieve(
-                query,
-                limit=config.research_memory_retrieval_limit,
-            )
-        ]
+        items, observations = memory_retrieval_items(
+            query,
+            store.retrieve(query, limit=config.research_memory_retrieval_limit),
+        )
+        return items, {
+            "enabled": True,
+            "retrieval_outcome": "completed",
+            "retrieved_count": len(items),
+            "retrieved_memory_ids": [item.memory_id for item in items],
+            "retrieval": observations,
+        }
     except Exception as exc:
         logger.warning("Research memory retrieval failed: %s", exc)
-        return []
+        return [], {
+            "enabled": True,
+            "retrieval_outcome": "failed",
+            "retrieval_error": str(exc),
+            "retrieved_count": 0,
+            "retrieved_memory_ids": [],
+            "retrieval": [],
+        }
+
+
+def _retrieve_memory_items(
+    store: ResearchMemoryStore | None,
+    query: str,
+) -> list[MemoryItem]:
+    """Compatibility wrapper for the P8 retrieval projection."""
+
+    items, _ = _retrieve_memory_items_with_diagnostics(store, query)
+    return items
 
 
 def _research_query(state: ResearchState) -> str:
@@ -243,7 +276,7 @@ class ResearchPlanner:
             if memory_store is not None
             else (_default_memory_store() if config.research_memory_enabled else None)
         )
-        
+
     async def plan(self, state: ResearchState) -> Dict[str, Any]:
         """使用结构化 LLM 输出创建研究计划。
         
@@ -251,8 +284,16 @@ class ResearchPlanner:
         """
         topic = _research_query(state)
         logger.info(f"正在规划研究：{topic}")
-        retrieved_memory = _retrieve_memory_items(self.memory_store, topic)
+        retrieved_memory, memory_diagnostics = _retrieve_memory_items_with_diagnostics(
+            self.memory_store,
+            topic,
+        )
         memory_context = format_planner_memory_context(retrieved_memory)
+        if config.research_memory_enabled:
+            memory_diagnostics["planner_context_memory_ids"] = [
+                item.memory_id for item in retrieved_memory
+            ]
+            memory_diagnostics["planner_context_count"] = len(retrieved_memory)
         
         await emit_planning_start(topic)
         
@@ -334,6 +375,8 @@ class ResearchPlanner:
                 total_output_tokens=state.total_output_tokens + output_tokens,
             ),
         }
+        if config.research_memory_enabled:
+            patch["memory_diagnostics"] = memory_diagnostics
         if execution.context is not None:
             patch["execution_context"] = execution.context
         return patch
@@ -365,6 +408,95 @@ class ResearchSearcher:
             if memory_store is not None
             else (_default_memory_store() if config.research_memory_enabled else None)
         )
+
+    @staticmethod
+    def _has_content(result: SearchResult) -> bool:
+        return bool(result.content and result.content.strip())
+
+    @staticmethod
+    def _coverage_metadata(coverage: SearchCoverage) -> dict[str, Any]:
+        return {
+            "result_query_coverage": coverage.result_query_coverage,
+            "extracted_query_coverage": coverage.extracted_query_coverage,
+            "missing_result_queries": [query.query for query in coverage.missing_result_queries],
+            "missing_extracted_queries": [
+                query.query for query in coverage.missing_extracted_queries
+            ],
+        }
+
+    @staticmethod
+    def _runtime_allows_adaptive_search(
+        execution_context: Any,
+    ) -> tuple[bool, str | None]:
+        """Check only runtime-owned remaining capacity; never reserve or reset it."""
+
+        if execution_context is None:
+            return True, None
+        remaining_timeout = execution_context.remaining_timeout_seconds()
+        if remaining_timeout is not None and remaining_timeout <= 0:
+            return False, "runtime_deadline_exhausted"
+        remaining_operations = execution_context.remaining_operation_calls()
+        if remaining_operations is not None and remaining_operations <= 0:
+            return False, "runtime_budget_exhausted"
+        return True, None
+
+    def _adaptive_executor(self) -> Any:
+        """Create a one-round executor without changing the primary executor."""
+
+        if not isinstance(self.search_executor, SearchExecutor):
+            # Keep injected legacy doubles observable as the primary executor.
+            # Production uses SearchExecutor, where the bounded config below
+            # is mandatory.
+            return copy(self.search_executor)
+        return SearchExecutor(
+            search_config=SearchConfig(
+                mode="deterministic_v2",
+                max_search_times=SEARCHER_ADAPTIVE_MAX_SEARCH_CALLS,
+                max_extract_times=SEARCHER_ADAPTIVE_MAX_EXTRACT_CALLS,
+                max_results_per_search=min(self.search_config.max_results_per_search, 3),
+                total_timeout_seconds=min(
+                    self.search_config.total_timeout_seconds,
+                    SEARCHER_ADAPTIVE_TIMEOUT_SECONDS,
+                ),
+                search_retry_times=0,
+                extract_retry_times=0,
+                allow_partial_results=True,
+            ),
+            search_tool=self.search_executor.search_tool,
+            extract_tool=self.search_executor.extract_tool,
+        )
+
+    @staticmethod
+    def _merge_primary_search_results(
+        primary_results: List[SearchResult],
+        supplementary_results: List[SearchResult],
+    ) -> tuple[List[SearchResult], List[SearchResult], int]:
+        """Keep primary ordering and allow supplementary content-only upgrades."""
+
+        merged = list(primary_results)
+        primary_positions: dict[str, int] = {}
+        for index, result in enumerate(primary_results):
+            normalized_url = normalize_web_url(result.url)
+            if normalized_url and normalized_url not in primary_positions:
+                primary_positions[normalized_url] = index
+
+        appended: List[SearchResult] = []
+        content_upgrades = 0
+        for result in supplementary_results:
+            normalized_url = normalize_web_url(result.url)
+            if not normalized_url:
+                continue
+            primary_index = primary_positions.get(normalized_url)
+            if primary_index is not None:
+                primary = merged[primary_index]
+                if not ResearchSearcher._has_content(primary) and ResearchSearcher._has_content(result):
+                    merged[primary_index] = primary.model_copy(update={"content": result.content})
+                    content_upgrades += 1
+                continue
+            primary_positions[normalized_url] = len(merged)
+            merged.append(result)
+            appended.append(result)
+        return merged, appended, content_upgrades
         
     async def search(self, state: ResearchState) -> Dict[str, Any]:
         """使用工具自主执行研究搜索。
@@ -575,14 +707,30 @@ class ResearchSearcher:
         )
 
         retrieved_memory = list(state.retrieved_memory)
+        memory_diagnostics = dict(state.memory_diagnostics)
         if not retrieved_memory:
-            retrieved_memory = _retrieve_memory_items(self.memory_store, _research_query(state))
+            retrieved_memory, retrieval_diagnostics = _retrieve_memory_items_with_diagnostics(
+                self.memory_store,
+                _research_query(state),
+            )
+            if config.research_memory_enabled:
+                memory_diagnostics.update(retrieval_diagnostics)
         memory_hints = build_search_memory_hints(
             _research_query(state),
             retrieved_memory,
             limit=config.research_memory_search_hint_limit,
         )
         search_queries = [*plan.search_queries, *memory_hints]
+        if config.research_memory_enabled:
+            memory_diagnostics.update(
+                {
+                    "enabled": True,
+                    "retrieved_count": len(retrieved_memory),
+                    "retrieved_memory_ids": [item.memory_id for item in retrieved_memory],
+                    "searcher_site_hints": [hint.query for hint in memory_hints],
+                    "searcher_site_hint_count": len(memory_hints),
+                }
+            )
 
         total_queries = len(search_queries)
         for i, query in enumerate(search_queries, 1):
@@ -598,6 +746,109 @@ class ResearchSearcher:
         execution = await self.search_executor.execute(search_queries, **search_args)
 
         search_results = execution.search_results
+        latest_execution_context = execution.execution_context
+        primary_coverage = measure_search_coverage(plan, search_results)
+        adaptive_diagnostic: dict[str, Any] = {
+            "kind": "adaptive_search",
+            "enabled": bool(config.searcher_adaptive_enabled),
+            "max_rounds": SEARCHER_ADAPTIVE_MAX_ROUNDS,
+            "rounds_attempted": 0,
+            "primary_coverage": self._coverage_metadata(primary_coverage),
+        }
+
+        has_usable_primary_result = any(normalize_web_url(result.url) for result in search_results)
+        coverage_incomplete = (
+            primary_coverage.result_query_coverage < 1.0
+            or primary_coverage.extracted_query_coverage < 1.0
+        )
+        configured_rounds = min(
+            max(0, config.searcher_adaptive_max_rounds),
+            SEARCHER_ADAPTIVE_MAX_ROUNDS,
+        )
+        adaptive_attempted = False
+        supplementary_execution = None
+
+        if not has_usable_primary_result:
+            adaptive_diagnostic["outcome"] = "skipped_no_usable_primary_results"
+        elif not config.searcher_adaptive_enabled or configured_rounds == 0:
+            adaptive_diagnostic["outcome"] = "disabled"
+        elif not coverage_incomplete:
+            adaptive_diagnostic["outcome"] = "not_needed"
+        else:
+            current_context = latest_execution_context or state.execution_context
+            allowed, skip_reason = self._runtime_allows_adaptive_search(current_context)
+            if not allowed:
+                adaptive_diagnostic["outcome"] = "skipped_runtime_unavailable"
+                adaptive_diagnostic["skip_reason"] = skip_reason
+            elif not adaptive_attempted:
+                supplementary_query = (
+                    primary_coverage.missing_result_queries[0]
+                    if primary_coverage.missing_result_queries
+                    else primary_coverage.missing_extracted_queries[0]
+                )
+                adaptive_attempted = True
+                adaptive_diagnostic["rounds_attempted"] = 1
+                adaptive_diagnostic["supplementary_query"] = supplementary_query.query
+                await emit_search_start(supplementary_query.query, 1, 1)
+                adaptive_executor = self._adaptive_executor()
+                adaptive_args: dict[str, Any] = {
+                    "max_results_per_search": min(self.search_config.max_results_per_search, 3),
+                }
+                if isinstance(adaptive_executor, SearchExecutor):
+                    adaptive_args["exclude_urls"] = [result.url for result in search_results]
+                if current_context is not None:
+                    adaptive_args["execution_context"] = current_context
+                try:
+                    supplementary_execution = await adaptive_executor.execute(
+                        [supplementary_query],
+                        **adaptive_args,
+                    )
+                except Exception as exc:
+                    adaptive_diagnostic["outcome"] = "supplementary_failed"
+                    adaptive_diagnostic["supplementary_error"] = str(exc)
+                else:
+                    if supplementary_execution.execution_context is not None:
+                        latest_execution_context = supplementary_execution.execution_context
+                    search_results, appended_results, content_upgrades = self._merge_primary_search_results(
+                        search_results,
+                        supplementary_execution.search_results,
+                    )
+                    post_coverage = measure_search_coverage(plan, search_results)
+                    coverage_improved = (
+                        post_coverage.result_query_coverage > primary_coverage.result_query_coverage
+                        or post_coverage.extracted_query_coverage
+                        > primary_coverage.extracted_query_coverage
+                    )
+                    new_content_bearing_results = sum(
+                        1 for result in appended_results if self._has_content(result)
+                    ) + content_upgrades
+                    adaptive_diagnostic.update(
+                        {
+                            "supplementary_error": supplementary_execution.error,
+                            "supplementary_partial": supplementary_execution.partial,
+                            "supplementary_search_calls": supplementary_execution.stats.search_calls,
+                            "supplementary_extract_calls": supplementary_execution.stats.extract_calls,
+                            "new_unique_urls": len(appended_results),
+                            "content_upgrades": content_upgrades,
+                            "new_content_bearing_results": new_content_bearing_results,
+                            "coverage_improved": coverage_improved,
+                            "post_coverage": self._coverage_metadata(post_coverage),
+                        }
+                    )
+                    if (
+                        supplementary_execution.error
+                        and supplementary_execution.error != "No search results"
+                        and not appended_results
+                        and not content_upgrades
+                    ):
+                        adaptive_diagnostic["outcome"] = "supplementary_failed"
+                    elif not appended_results and not content_upgrades:
+                        adaptive_diagnostic["outcome"] = "no_progress"
+                    elif coverage_improved and new_content_bearing_results > 0:
+                        adaptive_diagnostic["outcome"] = "completed"
+                    else:
+                        adaptive_diagnostic["outcome"] = "no_progress"
+
         total_extracted_chars = sum(
             len(result.content) if result.content else 0
             for result in search_results
@@ -670,6 +921,7 @@ class ResearchSearcher:
             "documents": documents,
             "retrieved_memory": retrieved_memory,
             "memory_ids": [item.memory_id for item in retrieved_memory],
+            "search_diagnostics": state.search_diagnostics + [adaptive_diagnostic],
             "error": None,
             "current_stage": "synthesizing",
             "iterations": state.iterations + 1,
@@ -685,10 +937,12 @@ class ResearchSearcher:
                 total_output_tokens=state.total_output_tokens,
             ),
         }
+        if config.research_memory_enabled:
+            result_patch["memory_diagnostics"] = memory_diagnostics
         # Agents forward but never interpret or synthesize runtime control
         # state. Terminal classification remains at the runner boundary.
-        if execution.execution_context is not None:
-            result_patch["execution_context"] = execution.execution_context
+        if latest_execution_context is not None:
+            result_patch["execution_context"] = latest_execution_context
         return result_patch
     
     def _extract_results_from_messages(self, messages: list) -> List[SearchResult]:

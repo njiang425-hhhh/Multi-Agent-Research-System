@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -29,8 +30,17 @@ class ResearchMemoryStore:
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self.path))
 
+    @contextmanager
+    def _connection(self):
+        conn = self._connect()
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
     def _initialize(self) -> None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS research_memory (
@@ -56,7 +66,7 @@ class ResearchMemoryStore:
     def upsert(self, record: ResearchMemoryRecord) -> ResearchMemoryRecord:
         """Persist one record, deduplicating by stable content hash."""
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             existing = conn.execute(
                 "SELECT record_json FROM research_memory WHERE content_hash = ?",
                 (record.content_hash,),
@@ -103,7 +113,7 @@ class ResearchMemoryStore:
         return [self.upsert(record) for record in records]
 
     def get(self, memory_id: str) -> ResearchMemoryRecord | None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT record_json FROM research_memory WHERE memory_id = ?",
                 (memory_id,),
@@ -111,7 +121,7 @@ class ResearchMemoryStore:
         return ResearchMemoryRecord.model_validate_json(row[0]) if row else None
 
     def delete(self, memory_id: str) -> bool:
-        with self._connect() as conn:
+        with self._connection() as conn:
             cursor = conn.execute(
                 "DELETE FROM research_memory WHERE memory_id = ?",
                 (memory_id,),
@@ -123,7 +133,7 @@ class ResearchMemoryStore:
 
         current = (now or datetime.now(timezone.utc)).isoformat()
         removed = 0
-        with self._connect() as conn:
+        with self._connection() as conn:
             cursor = conn.execute(
                 "DELETE FROM research_memory WHERE expires_at IS NOT NULL AND expires_at <= ?",
                 (current,),
@@ -153,7 +163,7 @@ class ResearchMemoryStore:
         return removed
 
     def list_records(self) -> list[ResearchMemoryRecord]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT record_json FROM research_memory
@@ -202,7 +212,7 @@ class ResearchMemoryStore:
         return scored[:limit]
 
     def count(self) -> int:
-        with self._connect() as conn:
+        with self._connection() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM research_memory").fetchone()[0])
 
     def dump_json(self) -> list[dict]:

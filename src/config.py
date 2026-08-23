@@ -158,6 +158,19 @@ class ResearchConfig(BaseModel):
         ge=0,
         description="Searcher 从 memory provenance 派生的最多 source hint 查询数"
     )
+
+    searcher_adaptive_enabled: bool = Field(
+        default=os.getenv("SEARCHER_ADAPTIVE_ENABLED", "true").lower()
+        in {"1", "true", "yes", "on"},
+        description="启用 Searcher 内单次 bounded supplementary search"
+    )
+
+    searcher_adaptive_max_rounds: int = Field(
+        default=int(os.getenv("SEARCHER_ADAPTIVE_MAX_ROUNDS", "1")),
+        ge=0,
+        le=1,
+        description="Searcher supplementary search 轮数上限（仅支持 0 或 1）"
+    )
     
     # 引用配置
     citation_style: str = Field(

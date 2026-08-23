@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.search.config import SearchConfig
+from src.config import ResearchConfig
 
 
 def test_search_config_uses_documented_defaults() -> None:
@@ -18,6 +19,16 @@ def test_search_config_uses_documented_defaults() -> None:
     assert config.search_retry_times == 0
     assert config.extract_retry_times == 0
     assert config.allow_partial_results is True
+
+
+def test_searcher_adaptive_config_is_enabled_and_hard_capped_to_one_round() -> None:
+    project_config = ResearchConfig()
+
+    assert project_config.searcher_adaptive_enabled is True
+    assert project_config.searcher_adaptive_max_rounds == 1
+
+    with pytest.raises(ValueError, match="searcher_adaptive_max_rounds"):
+        ResearchConfig(searcher_adaptive_max_rounds=2)
 
 
 def test_project_default_uses_the_runtime_owned_deterministic_search_path(
