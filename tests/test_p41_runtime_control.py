@@ -2,10 +2,17 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 
 import pytest
 
 from src import graph as graph_module
+from src.execution_policy import (
+    ExecutionContextCoordinator,
+    OperationBudgetExhausted,
+    OperationExecutionPolicy,
+    execute_operation,
+)
 from src.runtime_control import RunPolicy, create_execution_context
 from src.runtime_lifecycle import (
     apply_terminal_lifecycle,
@@ -87,6 +94,59 @@ def test_runtime_owned_fields_cannot_be_supplied_as_resume_business_input() -> N
     )
 
     assert filtered == {"query": "allowed business input"}
+
+
+def test_concurrent_operation_budget_requires_a_shared_context_coordinator() -> None:
+    async def operation() -> str:
+        await asyncio.sleep(0.01)
+        return "ok"
+
+    async def exercise() -> None:
+        raw_context = create_execution_context(
+            run_id="raw-risk",
+            thread_id="raw-risk",
+            policy=RunPolicy(max_operation_calls=1),
+        )
+        raw_results = await asyncio.gather(
+            *(
+                execute_operation(
+                    operation,
+                    policy=OperationExecutionPolicy(),
+                    local_deadline=perf_counter() + 5,
+                    context=raw_context,
+                )
+                for _ in range(2)
+            ),
+            return_exceptions=True,
+        )
+        assert sum(not isinstance(result, Exception) for result in raw_results) == 2
+
+        coordinated_context = ExecutionContextCoordinator(
+            create_execution_context(
+                run_id="coordinated",
+                thread_id="coordinated",
+                policy=RunPolicy(max_operation_calls=1),
+            )
+        )
+        coordinated_results = await asyncio.gather(
+            *(
+                execute_operation(
+                    operation,
+                    policy=OperationExecutionPolicy(),
+                    local_deadline=perf_counter() + 5,
+                    context=coordinated_context,
+                )
+                for _ in range(2)
+            ),
+            return_exceptions=True,
+        )
+
+        assert sum(not isinstance(result, Exception) for result in coordinated_results) == 1
+        assert sum(isinstance(result, OperationBudgetExhausted) for result in coordinated_results) == 1
+        assert coordinated_context.context is not None
+        assert coordinated_context.context.operation_calls == 1
+
+    asyncio.run(exercise())
 
 
 class _BlockingGraph:

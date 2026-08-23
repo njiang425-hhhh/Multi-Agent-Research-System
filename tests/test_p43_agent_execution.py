@@ -4,6 +4,7 @@ import asyncio
 import json
 from time import perf_counter
 
+import pytest
 from langchain_core.runnables import RunnableLambda
 
 from src import agents
@@ -11,7 +12,7 @@ from src.agents import ReportWriter, ResearchPlanner, ResearchSynthesizer
 from src.exceptions import LLMError
 from src.runtime_control import RunPolicy, create_execution_context
 from src.agent_trace import AgentTraceEvent
-from src.state import ResearchPlan, ResearchState, SearchQuery, SearchResult
+from src.state import ReportSection, ResearchPlan, ResearchState, SearchQuery, SearchResult
 from src.writer_profile import profile_writer_latency, profile_writer_trace
 
 
@@ -30,6 +31,16 @@ def _result() -> SearchResult:
         url="https://example.com/source",
         snippet="Fake snippet",
         content="Fake content",
+    )
+
+
+def _search_result(title: str, url: str) -> SearchResult:
+    return SearchResult(
+        query="topic",
+        title=title,
+        url=url,
+        snippet=f"Snippet for {title}",
+        content=f"Content for {title}",
     )
 
 
@@ -111,6 +122,128 @@ def test_writer_profile_confirms_sequential_section_llm_critical_path() -> None:
     assert profile.llm_seconds >= 0.05
     assert profile.serial_fraction is not None and profile.serial_fraction >= 0.75
     assert profile.recommends_concurrency is False
+
+
+def test_writer_bounded_sections_respect_concurrency_and_assemble_by_outline(monkeypatch) -> None:
+    state = _writer_state(sections=["One", "Two", "Three"])
+    writer = ReportWriter(
+        llm=object(),
+        max_retries=1,
+        section_execution_mode="bounded",
+        section_concurrency=2,
+    )
+    active = 0
+    max_active = 0
+    completed: list[str] = []
+    delays = {"One": 0.03, "Two": 0.01, "Three": 0.02}
+
+    async def fake_write_section(
+        _topic: str,
+        section_title: str,
+        _findings: list[str],
+        _search_results: list[SearchResult],
+        **_kwargs,
+    ) -> tuple[ReportSection, dict]:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            await asyncio.sleep(delays[section_title])
+            completed.append(section_title)
+            return (
+                ReportSection(
+                    title=section_title,
+                    content=(f"{section_title} bounded writer content [1]. " * 30),
+                    sources=[f"https://example.com/{section_title.lower()}"],
+                ),
+                {
+                    "agent": "ReportWriter",
+                    "operation": f"write_section_{section_title}",
+                    "input_tokens": 3,
+                    "output_tokens": 2,
+                    "duration": delays[section_title],
+                },
+            )
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(writer, "_write_section", fake_write_section)
+    patch = asyncio.run(writer.write_report(state))
+
+    assert max_active == 2
+    assert completed[:2] == ["Two", "One"]
+    assert [section.title for section in patch["report_sections"]] == ["One", "Two", "Three"]
+    assert patch["final_report"].index("## One") < patch["final_report"].index("## Two")
+    assert patch["final_report"].index("## Two") < patch["final_report"].index("## Three")
+    assert [detail["section_index"] for detail in patch["llm_call_details"]] == [0, 1, 2]
+    assert {detail["writer_execution_mode"] for detail in patch["llm_call_details"]} == {"bounded"}
+
+
+def test_writer_bounded_shared_budget_fails_all_or_nothing_without_lost_update() -> None:
+    async def slow_writer(_: object) -> str:
+        await asyncio.sleep(0.02)
+        return "Writer content with citation [1]. " * 30
+
+    state = _writer_state(sections=["One", "Two"], context=_context(budget=1))
+    writer = ReportWriter(
+        llm=RunnableLambda(slow_writer),
+        max_retries=1,
+        section_execution_mode="bounded",
+        section_concurrency=2,
+    )
+
+    patch = asyncio.run(writer.write_report(state))
+
+    assert patch["error"] == "报告撰写失败：Run operation budget exhausted"
+    assert patch["llm_calls"] == 1
+    assert len(patch["llm_call_details"]) == 1
+    assert patch["execution_context"].operation_calls == 1
+    assert patch["execution_context"].operation_stop_reason == "budget_exhausted"
+    assert "report" not in patch
+
+
+def test_writer_bounded_cancel_propagates_without_failure_patch(monkeypatch) -> None:
+    state = _writer_state(sections=["One", "Two"])
+    writer = ReportWriter(
+        llm=object(),
+        max_retries=1,
+        section_execution_mode="bounded",
+        section_concurrency=2,
+    )
+
+    async def blocking_section(*_args, **_kwargs):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(writer, "_write_section", blocking_section)
+
+    async def exercise() -> None:
+        task = asyncio.create_task(writer.write_report(state))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+
+def test_writer_section_citations_preserve_first_seen_order() -> None:
+    async def cited_writer(_: object) -> str:
+        return "Citation order [2], then [1], then duplicate [2]. " * 10
+
+    writer = ReportWriter(llm=RunnableLambda(cited_writer), max_retries=1)
+    section, _details, _context = asyncio.run(
+        writer._write_section(
+            "topic",
+            "Summary",
+            ["Finding"],
+            [
+                _search_result("First", "https://example.com/first"),
+                _search_result("Second", "https://example.com/second"),
+            ],
+        )
+    )
+
+    assert section.sources == ["https://example.com/second", "https://example.com/first"]
 
 
 def test_writer_budget_exhaustion_preserves_completed_attempt_usage_without_partial_report() -> None:

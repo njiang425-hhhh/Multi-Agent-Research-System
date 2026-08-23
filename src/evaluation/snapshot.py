@@ -98,6 +98,7 @@ def build_evaluation_snapshot(
     dataset_version: str | None = None,
     dataset: EvaluationDataset | None = None,
     case: EvaluationCase | None = None,
+    metric_names: Sequence[str] | None = None,
     configuration: Mapping[str, Any] | None = None,
 ) -> EvaluationSnapshot:
     """Create a stable snapshot without reading or modifying production State."""
@@ -116,7 +117,7 @@ def build_evaluation_snapshot(
         "dataset_version": resolved_dataset_version,
         "dataset_content_fingerprint": dataset_content_fingerprint,
         "expected_completed_nodes": list(expected_completed_nodes),
-        "metric_names": list(EVALUATION_METRIC_NAMES),
+        "metric_names": list(metric_names or EVALUATION_METRIC_NAMES),
         "configuration": _sanitize_configuration(dict(configuration or {})),
     }
     return EvaluationSnapshot(**payload, fingerprint=_fingerprint_payload(payload))
@@ -131,6 +132,7 @@ def validate_evaluation_snapshot(
     dataset_version: str | None = None,
     dataset: EvaluationDataset | None = None,
     case: EvaluationCase | None = None,
+    metric_names: Sequence[str] | None = None,
     configuration: Mapping[str, Any] | None = None,
 ) -> EvaluationSnapshot:
     """Reject snapshots not bound to this evaluator, dataset, case and config."""
@@ -142,6 +144,7 @@ def validate_evaluation_snapshot(
         dataset=dataset,
         case=case,
         expected_completed_nodes=expected_completed_nodes,
+        metric_names=metric_names,
         configuration=configuration,
     )
     if snapshot.model_dump(mode="json") != expected.model_dump(mode="json"):

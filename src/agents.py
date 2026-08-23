@@ -1,11 +1,13 @@
 """带依赖注入的研究流程代理节点。"""
 
 import asyncio
-from typing import Callable, List, Optional, Dict, Any, Protocol
+from dataclasses import dataclass
+from typing import Callable, List, Optional, Dict, Any, Protocol, Literal
 import logging
 import time
 import json
 import re
+from pathlib import Path
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
@@ -15,6 +17,7 @@ from langchain.agents import create_agent
 from src.state import (
     EvidenceDiagnostics,
     Finding,
+    MemoryItem,
     ResearchState,
     ResearchPlan,
     SearchQuery,
@@ -31,6 +34,7 @@ from src.utils.credibility import CredibilityScorer
 from src.utils.citations import CitationFormatter
 from src.llm_tracker import estimate_tokens
 from src.llm_execution import execute_llm_operation
+from src.execution_policy import ExecutionContextCoordinator
 from src.exceptions import PlanningError, SearchError, SynthesisError, ReportGenerationError
 from src.search.config import SearchConfig
 from src.search.executor import SearchExecutor
@@ -38,6 +42,13 @@ from src.evidence.adapters import scored_search_results_to_documents
 from src.evidence.compat import key_findings_to_findings
 from src.evidence.config import EvidenceRuntimeConfig
 from src.evidence.sidecar import EvidenceSidecarResult, EvidenceSidecarService
+from src.memory import (
+    ResearchMemoryStore,
+    build_search_memory_hints,
+    format_planner_memory_context,
+    memory_record_to_item,
+)
+from src.planning import normalize_research_plan
 from src.prompts import (
     PLANNER_SYSTEM_PROMPT, PLANNER_USER_TEMPLATE,
     SEARCHER_SYSTEM_PROMPT, SEARCHER_USER_TEMPLATE,
@@ -61,6 +72,36 @@ logger = logging.getLogger(__name__)
 SEARCHER_AGENT_RECURSION_LIMIT = 12
 SEARCHER_AGENT_TIMEOUT_SECONDS = 90
 LLM_OPERATION_TIMEOUT_SECONDS = 90
+
+
+def _default_memory_store() -> ResearchMemoryStore:
+    return ResearchMemoryStore(
+        Path(config.research_memory_store_path),
+        max_records=config.research_memory_max_records,
+    )
+
+
+def _retrieve_memory_items(
+    store: ResearchMemoryStore | None,
+    query: str,
+) -> list[MemoryItem]:
+    if (
+        not config.research_memory_enabled
+        or config.research_memory_retrieval_limit <= 0
+        or store is None
+    ):
+        return []
+    try:
+        return [
+            memory_record_to_item(record, score=score)
+            for record, score in store.retrieve(
+                query,
+                limit=config.research_memory_retrieval_limit,
+            )
+        ]
+    except Exception as exc:
+        logger.warning("Research memory retrieval failed: %s", exc)
+        return []
 
 
 def _research_query(state: ResearchState) -> str:
@@ -189,9 +230,19 @@ def _llm_failure_patch(
 class ResearchPlanner:
     """负责规划研究策略的自主代理。"""
     
-    def __init__(self, llm: Optional[BaseChatModel] = None, max_retries: int = 3):
+    def __init__(
+        self,
+        llm: Optional[BaseChatModel] = None,
+        max_retries: int = 3,
+        memory_store: ResearchMemoryStore | None = None,
+    ):
         self.llm = llm or get_llm(temperature=0.7)
         self.max_retries = max_retries
+        self.memory_store = (
+            memory_store
+            if memory_store is not None
+            else (_default_memory_store() if config.research_memory_enabled else None)
+        )
         
     async def plan(self, state: ResearchState) -> Dict[str, Any]:
         """使用结构化 LLM 输出创建研究计划。
@@ -200,6 +251,8 @@ class ResearchPlanner:
         """
         topic = _research_query(state)
         logger.info(f"正在规划研究：{topic}")
+        retrieved_memory = _retrieve_memory_items(self.memory_store, topic)
+        memory_context = format_planner_memory_context(retrieved_memory)
         
         await emit_planning_start(topic)
         
@@ -214,13 +267,17 @@ class ResearchPlanner:
         ])
         
         chain = prompt | self.llm | JsonOutputParser()
-        input_text = f"{topic} {config.max_search_queries} {config.max_report_sections}"
+        input_text = (
+            f"{topic} {config.max_search_queries} {config.max_report_sections} "
+            f"{memory_context}"
+        )
         try:
             execution = await execute_llm_operation(
                 lambda: chain.ainvoke({
                     "topic": topic,
                     "max_queries": config.max_search_queries,
                     "max_sections": config.max_report_sections,
+                    "memory_context": memory_context,
                 }),
                 agent="ResearchPlanner",
                 operation_name="plan",
@@ -243,14 +300,10 @@ class ResearchPlanner:
                 raise PlanningError("返回的计划结构无效")
             if not result["search_queries"]:
                 raise PlanningError("未生成搜索查询")
-            plan = ResearchPlan(
-                topic=result["topic"],
-                objectives=result["objectives"][:5],
-                search_queries=[
-                    SearchQuery(query=sq["query"], purpose=sq["purpose"])
-                    for sq in result["search_queries"][:config.max_search_queries]
-                ],
-                report_outline=result["report_outline"][:config.max_report_sections],
+            plan = normalize_research_plan(
+                result,
+                max_queries=config.max_search_queries,
+                max_sections=config.max_report_sections,
             )
         except Exception as error:
             setattr(error, "llm_call_details", execution.call_details)
@@ -265,6 +318,8 @@ class ResearchPlanner:
         patch: Dict[str, Any] = {
             "plan": plan,
             "research_plan": plan,
+            "retrieved_memory": retrieved_memory,
+            "memory_ids": [item.memory_id for item in retrieved_memory],
             "current_stage": "searching",
             "iterations": state.iterations + 1,
             "iteration": state.iteration + 1,
@@ -297,6 +352,7 @@ class ResearchSearcher:
         credibility_scorer: Optional[CredibilityScorer] = None,
         max_retries: int = 1,
         search_config: Optional[SearchConfig] = None,
+        memory_store: ResearchMemoryStore | None = None,
     ):
         self.llm = llm or get_llm(temperature=0.3)
         self.tools = get_research_tools(agent_type="search")
@@ -304,6 +360,11 @@ class ResearchSearcher:
         self.max_retries = max_retries
         self.search_config = search_config or SearchConfig.from_project_config(config)
         self.search_executor = SearchExecutor(search_config=self.search_config)
+        self.memory_store = (
+            memory_store
+            if memory_store is not None
+            else (_default_memory_store() if config.research_memory_enabled else None)
+        )
         
     async def search(self, state: ResearchState) -> Dict[str, Any]:
         """使用工具自主执行研究搜索。
@@ -513,8 +574,18 @@ class ResearchSearcher:
             f"{len(plan.search_queries)} 个查询"
         )
 
-        total_queries = len(plan.search_queries)
-        for i, query in enumerate(plan.search_queries, 1):
+        retrieved_memory = list(state.retrieved_memory)
+        if not retrieved_memory:
+            retrieved_memory = _retrieve_memory_items(self.memory_store, _research_query(state))
+        memory_hints = build_search_memory_hints(
+            _research_query(state),
+            retrieved_memory,
+            limit=config.research_memory_search_hint_limit,
+        )
+        search_queries = [*plan.search_queries, *memory_hints]
+
+        total_queries = len(search_queries)
+        for i, query in enumerate(search_queries, 1):
             await emit_search_start(query.query, i, total_queries)
 
         search_args = dict(
@@ -524,7 +595,7 @@ class ResearchSearcher:
         # runtime context; runner-created states always supply one.
         if state.execution_context is not None:
             search_args["execution_context"] = state.execution_context
-        execution = await self.search_executor.execute(plan.search_queries, **search_args)
+        execution = await self.search_executor.execute(search_queries, **search_args)
 
         search_results = execution.search_results
         total_extracted_chars = sum(
@@ -577,6 +648,12 @@ class ResearchSearcher:
             "search_calls": execution.stats.search_calls,
             "extract_calls": execution.stats.extract_calls,
             "partial": execution.partial,
+            "memory_hint_count": len(memory_hints),
+            "memory_hint_source_urls": [
+                url
+                for item in retrieved_memory
+                for url in (item.metadata.get("source_refs") or [])
+            ][: config.research_memory_search_hint_limit],
             # Preserve the runtime's per-attempt records for Agent Trace. This
             # is metadata only; legacy LLM totals remain unchanged.
             "tool_invocations": execution.stats.invocation_records,
@@ -591,6 +668,8 @@ class ResearchSearcher:
             "search_results": sorted_results,
             "credibility_scores": credibility_scores,
             "documents": documents,
+            "retrieved_memory": retrieved_memory,
+            "memory_ids": [item.memory_id for item in retrieved_memory],
             "error": None,
             "current_stage": "synthesizing",
             "iterations": state.iterations + 1,
@@ -902,6 +981,13 @@ class ResearchSynthesizer:
 # 报告撰写代理
 # =============================================================================
 
+@dataclass(slots=True)
+class _WriterSectionBatch:
+    sections: list[ReportSection]
+    call_details: list[dict[str, Any]]
+    execution_context: Any
+
+
 class ReportWriter:
     """负责撰写研究报告的自主代理。"""
     
@@ -910,13 +996,17 @@ class ReportWriter:
         llm: Optional[BaseChatModel] = None,
         citation_formatter: Optional[CitationFormatter] = None,
         citation_style: str = 'apa',
-        max_retries: int = 3
+        max_retries: int = 3,
+        section_execution_mode: Literal["serial", "bounded"] | None = None,
+        section_concurrency: int | None = None,
     ):
         self.llm = llm or get_llm(temperature=0.7)
         self.tools = get_research_tools(agent_type="writing")
         self.max_retries = max_retries
         self.citation_style = citation_style
         self.citation_formatter = citation_formatter or CitationFormatter()
+        self.section_execution_mode = section_execution_mode or config.writer_section_execution_mode
+        self.section_concurrency = max(1, section_concurrency or config.writer_section_concurrency)
         
     async def write_report(self, state: ResearchState) -> Dict[str, Any]:
         """通过验证和重试撰写最终研究报告。
@@ -934,31 +1024,12 @@ class ReportWriter:
         report_sections: list[ReportSection] = []
         report_call_details: list[dict[str, Any]] = []
         current_context = state.execution_context
-        total_sections = len(state.plan.report_outline)
 
         try:
-            for section_idx, section_title in enumerate(state.plan.report_outline, 1):
-                await emit_writing_section(section_title, section_idx, total_sections)
-                section_args = (
-                    state.research_topic,
-                    section_title,
-                    state.key_findings,
-                    state.search_results,
-                )
-                section_kwargs: dict[str, Any] = {}
-                if current_context is not None:
-                    section_kwargs["execution_context"] = current_context
-                written = await self._write_section(*section_args, **section_kwargs)
-                # Existing tests and external injection seams return the old
-                # two-tuple. The production implementation returns context.
-                if len(written) == 3:
-                    section, section_details, current_context = written
-                else:
-                    section, legacy_detail = written
-                    section_details = [legacy_detail] if isinstance(legacy_detail, dict) else []
-                if section:
-                    report_sections.append(section)
-                report_call_details.extend(section_details)
+            batch = await self._write_sections(state)
+            report_sections = batch.sections
+            report_call_details = batch.call_details
+            current_context = batch.execution_context
 
             if not report_sections:
                 raise ReportGenerationError("未生成报告章节")
@@ -1021,6 +1092,171 @@ class ReportWriter:
         if current_context is not None:
             patch["execution_context"] = current_context
         return patch
+
+    async def _write_sections(self, state: ResearchState) -> _WriterSectionBatch:
+        if self.section_execution_mode == "bounded" and self.section_concurrency > 1:
+            return await self._write_sections_bounded(state)
+        return await self._write_sections_serial(state)
+
+    async def _write_sections_serial(self, state: ResearchState) -> _WriterSectionBatch:
+        report_sections: list[ReportSection] = []
+        report_call_details: list[dict[str, Any]] = []
+        current_context = state.execution_context
+        total_sections = len(state.plan.report_outline) if state.plan else 0
+
+        try:
+            for section_idx, section_title in enumerate(state.plan.report_outline, 1):
+                await emit_writing_section(section_title, section_idx, total_sections)
+                section, section_details, current_context = await self._write_section_result(
+                    state,
+                    section_idx - 1,
+                    section_title,
+                    current_context,
+                )
+                if section:
+                    report_sections.append(section)
+                report_call_details.extend(section_details)
+        except Exception as error:
+            details = report_call_details + list(getattr(error, "llm_call_details", ()) or ())
+            setattr(error, "llm_call_details", details)
+            if getattr(error, "execution_context", None) is None and current_context is not None:
+                setattr(error, "execution_context", current_context)
+            raise
+
+        return _WriterSectionBatch(
+            sections=report_sections,
+            call_details=report_call_details,
+            execution_context=current_context,
+        )
+
+    async def _write_sections_bounded(self, state: ResearchState) -> _WriterSectionBatch:
+        outline = list(state.plan.report_outline) if state.plan else []
+        total_sections = len(outline)
+        coordinator = ExecutionContextCoordinator(state.execution_context)
+        results: list[tuple[ReportSection | None, list[dict[str, Any]]] | None] = [
+            None for _ in outline
+        ]
+        failures: dict[int, Exception] = {}
+        failure_observed = asyncio.Event()
+        queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+        for index, section_title in enumerate(outline):
+            await emit_writing_section(section_title, index + 1, total_sections)
+            queue.put_nowait((index, section_title))
+
+        async def worker() -> None:
+            while not failure_observed.is_set():
+                try:
+                    index, section_title = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                if failure_observed.is_set():
+                    queue.task_done()
+                    return
+                try:
+                    section, section_details, _context = await self._write_section_result(
+                        state,
+                        index,
+                        section_title,
+                        coordinator,
+                    )
+                    results[index] = (section, section_details)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    failures[index] = error
+                    failure_observed.set()
+                finally:
+                    queue.task_done()
+
+        worker_count = min(self.section_concurrency, total_sections)
+        tasks = [asyncio.create_task(worker()) for _ in range(worker_count)]
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        ordered_details = self._ordered_section_details(results, failures, total_sections)
+        if failures:
+            primary_index = min(failures)
+            primary = failures[primary_index]
+            setattr(primary, "llm_call_details", ordered_details)
+            if getattr(primary, "execution_context", None) is None and coordinator.context is not None:
+                setattr(primary, "execution_context", coordinator.context)
+            raise primary
+
+        return _WriterSectionBatch(
+            sections=[
+                section
+                for item in results
+                if item is not None
+                for section in [item[0]]
+                if section is not None
+            ],
+            call_details=ordered_details,
+            execution_context=coordinator.context,
+        )
+
+    def _ordered_section_details(
+        self,
+        results: list[tuple[ReportSection | None, list[dict[str, Any]]] | None],
+        failures: dict[int, Exception],
+        total_sections: int,
+    ) -> list[dict[str, Any]]:
+        details: list[dict[str, Any]] = []
+        for index in range(total_sections):
+            if results[index] is not None:
+                details.extend(results[index][1])
+            elif index in failures:
+                details.extend(list(getattr(failures[index], "llm_call_details", ()) or ()))
+        return details
+
+    async def _write_section_result(
+        self,
+        state: ResearchState,
+        section_index: int,
+        section_title: str,
+        execution_context=None,
+    ) -> tuple[ReportSection | None, list[dict[str, Any]], Any]:
+        section_kwargs: dict[str, Any] = {}
+        if execution_context is not None:
+            section_kwargs["execution_context"] = execution_context
+        written = await self._write_section(
+            state.research_topic,
+            section_title,
+            state.key_findings,
+            state.search_results,
+            **section_kwargs,
+        )
+        # Existing tests and external injection seams return the old two-tuple.
+        # The production implementation returns context.
+        if len(written) == 3:
+            section, raw_details, current_context = written
+        else:
+            section, legacy_detail = written
+            raw_details = [legacy_detail] if isinstance(legacy_detail, dict) else []
+            current_context = execution_context
+        section_details = [
+            self._annotate_section_detail(detail, section_index, section_title)
+            for detail in (raw_details or [])
+            if isinstance(detail, dict)
+        ]
+        return section, section_details, current_context
+
+    def _annotate_section_detail(
+        self,
+        detail: dict[str, Any],
+        section_index: int,
+        section_title: str,
+    ) -> dict[str, Any]:
+        annotated = dict(detail)
+        annotated.setdefault("section_index", section_index)
+        annotated.setdefault("section_title", section_title)
+        annotated.setdefault("writer_execution_mode", self.section_execution_mode)
+        annotated.setdefault("writer_section_concurrency", self.section_concurrency)
+        return annotated
     
     async def _write_section(
         self,
@@ -1076,10 +1312,14 @@ class ReportWriter:
 
         citations = re.findall(r'\[(\d+)\]', content)
         source_urls = []
-        for cite_num in set(citations):
+        seen_source_urls = set()
+        for cite_num in citations:
             idx = int(cite_num) - 1
             if 0 <= idx < len(search_results):
-                source_urls.append(search_results[idx].url)
+                url = search_results[idx].url
+                if url and url not in seen_source_urls:
+                    seen_source_urls.add(url)
+                    source_urls.append(url)
         section = ReportSection(
             title=section_title,
             content=content,

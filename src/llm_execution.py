@@ -9,6 +9,7 @@ from typing import Any, Optional, TypeVar
 
 from src.exceptions import LLMError
 from src.execution_policy import (
+    ExecutionContextLike,
     OperationAttempt,
     OperationExecutionError,
     OperationExecutionPolicy,
@@ -82,7 +83,7 @@ async def execute_llm_operation(
     input_text: str,
     local_timeout_seconds: float,
     max_retries: int,
-    context: Optional[ExecutionContext],
+    context: ExecutionContextLike,
     output_text: Callable[[_Result], str] = str,
 ) -> LLMOperationResult:
     """Run an LLM operation once-or-retry with complete attempt accounting.

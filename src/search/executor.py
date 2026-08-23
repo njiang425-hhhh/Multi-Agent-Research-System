@@ -131,7 +131,10 @@ class SearchExecutor:
                     results.append(result)
 
             if not timed_out:
-                for result in results[: self.search_config.max_extract_times]:
+                for result in self._ordered_extraction_candidates(
+                    results,
+                    max_extract_times=self.search_config.max_extract_times,
+                ):
                     if self._deadline_expired(deadline):
                         timed_out = True
                         break
@@ -329,6 +332,44 @@ class SearchExecutor:
             )
         except ValueError:
             return ""
+
+    @classmethod
+    def _ordered_extraction_candidates(
+        cls,
+        results: Sequence[SearchResult],
+        *,
+        max_extract_times: int,
+    ) -> list[SearchResult]:
+        """Select extraction candidates round-robin by originating query."""
+
+        if max_extract_times <= 0:
+            return []
+
+        query_order: list[str] = []
+        grouped: dict[str, list[SearchResult]] = {}
+        for result in results:
+            key = cls._normalize_query(result.query)
+            if key not in grouped:
+                grouped[key] = []
+                query_order.append(key)
+            grouped[key].append(result)
+
+        ordered: list[SearchResult] = []
+        rank = 0
+        while len(ordered) < max_extract_times:
+            added = False
+            for key in query_order:
+                items = grouped[key]
+                if rank >= len(items):
+                    continue
+                ordered.append(items[rank])
+                added = True
+                if len(ordered) >= max_extract_times:
+                    break
+            if not added:
+                break
+            rank += 1
+        return ordered
 
     @staticmethod
     def _coerce_items(payload: Any) -> Iterable[Any]:

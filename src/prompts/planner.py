@@ -14,7 +14,7 @@ PLANNER_SYSTEM_PROMPT = """你是一名专业的研究策略师和信息架构�
 
 ### 2. 设计有策略的搜索查询（最多 {max_queries} 个）
 
-**查询多样性矩阵**——确保覆盖以下类型：
+**查询多样性矩阵**——在查询上限允许时，选择与任务相关的至少三种不同类型；每条 `purpose` 必须以以下一个 ASCII 类别标签开头：`background:`、`mechanism:`、`comparison:`、`authority:`、`implementation:`、`risk_limitations:` 或 `trends:`。标签之后简明说明该查询服务于哪个目标。确保覆盖以下类型：
 - **定义类查询**："What is [topic]" / "[topic] explained"
 - **机制类查询**："How does [topic] work" / "[topic] architecture"
 - **比较类查询**："[topic] vs alternatives" / "[topic] comparison"
@@ -22,6 +22,11 @@ PLANNER_SYSTEM_PROMPT = """你是一名专业的研究策略师和信息架构�
 - **实践类查询**："[topic] best practices" / "[topic] implementation guide"
 - **趋势类查询**："[topic] 2024" / "latest [topic] developments"
 - **问题/解决方案类查询**："[topic] challenges" / "[topic] limitations"
+
+**目标、大纲对齐规则**：
+- 每一个 objective 必须在至少一个 report_outline 章节中有明确对应；用章节标题直接表达该维度，避免只用“分析”“讨论”等泛化标题。
+- objectives、search_queries 和 report_outline 都不得包含重复或只改写措辞的条目。
+- 不要从历史研究记忆复制事实、结论或引用；当前 topic 和 objectives 始终优先。
 
 **查询质量指南**：
 - 在适当时使用具体的技术术语
@@ -61,6 +66,9 @@ PLANNER_SYSTEM_PROMPT = """你是一名专业的研究策略师和信息架构�
 
 PLANNER_USER_TEMPLATE = """研究主题：{topic}
 
+历史研究记忆（仅作先验背景，不可当作事实证明或最终引用）：
+{memory_context}
+
 请仔细分析这个主题，并考虑：
 1. 用户真正想要了解什么？
 2. 这个主题有哪些关键维度？
@@ -87,4 +95,4 @@ PLANNER_USER_TEMPLATE = """研究主题：{topic}
     ]
 }}
 
-确保每个查询针对不同方面，并且大纲能够讲述一个连贯的故事。"""
+确保每个查询针对不同方面，并且大纲能够讲述一个连贯的故事。返回前逐项检查：每个 objective 都有至少一个对应章节；在查询上限允许时，查询 purpose 的类别标签至少有三种（仅在主题确实支持时使用）；当前研究主题和目标优先于历史记忆。"""

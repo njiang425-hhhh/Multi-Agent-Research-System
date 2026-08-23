@@ -39,6 +39,7 @@ from src.agent_trace import trace_node_execution
 from src.utils.cache import ResearchCache
 from src.config import config
 from src.exceptions import DeepResearchError
+from src.memory import ResearchMemoryStore, project_research_memories
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +47,32 @@ logger = logging.getLogger(__name__)
 
 
 PERSISTENT_LEASE_TTL_SECONDS = 300.0
+
+
+def _memory_store_from_config() -> ResearchMemoryStore:
+    return ResearchMemoryStore(
+        Path(config.research_memory_store_path),
+        max_records=config.research_memory_max_records,
+    )
+
+
+def _persist_completed_research_memory(final_state: Dict[str, Any]) -> None:
+    """Best-effort post-run memory write; never changes run outcome."""
+
+    if not config.research_memory_enabled:
+        return
+    if final_state.get("status") != "completed" or final_state.get("terminal_reason") != "completed":
+        return
+    try:
+        records = project_research_memories(
+            final_state,
+            ttl_days=config.research_memory_ttl_days,
+        )
+        if not records:
+            return
+        _memory_store_from_config().upsert_many(records)
+    except Exception:
+        logger.exception("Research memory persistence failed; run result is unchanged")
 
 
 def _create_initial_state(
@@ -329,6 +356,8 @@ async def run_research(
         if run_config.get("configurable", {}).get("thread_id"):
             logger.info(f"线程 ID：{run_config['configurable']['thread_id']}")
         raise
+
+    _persist_completed_research_memory(final_state)
     
     if use_cache and is_successful_cache_payload(final_state):
         cache.set(topic, final_state)
@@ -401,6 +430,8 @@ async def run_research_with_persistence(
                 logger.error(f"研究流程失败：{e}")
                 logger.info(f"流程状态已保存到磁盘。可使用 thread_id 恢复：{tid}")
                 raise
+
+    _persist_completed_research_memory(final_state)
     
     if use_cache and is_successful_cache_payload(final_state):
         cache.set(topic, final_state)
@@ -477,6 +508,8 @@ async def resume_research(
                 ),
             )
             lease.assert_held()
+
+    _persist_completed_research_memory(final_state)
     
     return final_state
 

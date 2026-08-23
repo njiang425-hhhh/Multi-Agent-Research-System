@@ -2,7 +2,7 @@
 
 > 本文是下一会话唯一交接基线；若与历史 handoff、提交记录或旧测试结论冲突，以当前源码和本文为准。
 >
-> 最后更新：2026-08-21。P0-P9 已正式关闭；工作区仍含未提交 P7/P8/P9 实现。P10 Research Coverage 仅为待评审候选，尚未批准。
+> 最后更新：2026-08-22。P0-P10 已正式关闭；P10.2 deterministic extraction coverage ordering 已完成。P11.1 Quality-to-Action Advisory Contract 已完成，但仍保持 Evaluation-only advisory 边界。
 
 ## 目录
 
@@ -22,12 +22,12 @@
 | 项目 | 当前事实 |
 |---|---|
 | 产品目标 | 面向来源的研究 Agent：把用户 Query 转为结构化计划、搜索来源、综合 Findings 和带引用的 Report，同时保持 runtime、provenance 与 Evaluation 边界。 |
-| 当前阶段 | P0-P9 已正式关闭；系统保持 Graph V1。P10 Research Coverage 只是 **candidate/review**，未批准、未设计、未实现。 |
+| 当前阶段 | P0-P10 已正式关闭；P11.1 advisory contract 已完成。系统保持 Graph V1，未获得任何生产 action 执行权限。 |
 | Graph | 固定线性 Graph V1：`Planner -> Searcher -> Synthesizer -> Writer`。现有 router、Writer 输入、legacy 主链和 Report contract 不变。 |
-| Provider / Search | 当前默认运行组合：DeepSeek + Tavily + `deterministic_v2`。`SearchExecutor` 拥有确定性顺序 search/extract；`legacy_agent` 仅显式兼容。 |
+| Provider / Search | 当前默认运行组合：DeepSeek + Tavily + `deterministic_v2`。`SearchExecutor` 拥有确定性 search 与 round-robin-by-query extraction ordering；`legacy_agent` 仅显式兼容。 |
 | 默认开关 | `EVIDENCE_ANALYZER_ENABLED=false`；`RESEARCH_MEMORY_ENABLED=false`；`WRITER_SECTION_EXECUTION_MODE=serial`。Writer `bounded` 需显式开启，实验 bound 默认 `2`。 |
-| 测试基线 | fake-only 全量：**282 passed，2 个既有 Pydantic deprecation warnings**。CI 使用 Python 3.11 与固定 pytest `--basetemp`；真实 provider 验证仅手工执行，不进 CI。 |
-| 当前决策 | 不改生产默认或控制流。先评审 P10 是否有明确用户问题、可重复指标和 Graph V1 内最小范围，才可授权实施。 |
+| 测试基线 | fake-only 全量：**303 passed，2 个既有 Pydantic deprecation warnings**。CI 使用 Python 3.11 与固定 pytest `--basetemp`；真实 provider 验证仅手工执行，不进 CI。 |
+| 当前决策 | 不改 Graph/router/Writer/runtime ownership。P11.1 只统一 quality observations 并输出 advisory recommendation；不自动 routing、re-search、replan 或 Reflection。 |
 
 ## Current Architecture
 
@@ -81,7 +81,7 @@ Cross-cutting：
 1. CLI/Chainlit 创建或 resume run；Runtime 建立 run identity、lifecycle、deadline/budget 和 checkpoint/lease 语义。
 2. Planner 读取 canonical Query，可选读取 bounded P8 Memory 作为 prior context；一次 LLM call 生成现有 `ResearchPlan`。P9 仅以 prompt/normalization 改善 purpose、去重与 objective-outline 对齐。
 3. Searcher 消费 `ResearchPlan.search_queries`。默认 `deterministic_v2` 经 `SearchExecutor`；Memory source hint 仅追加 bounded `site:<host>` query，仍走同一 executor。
-4. Search 结果成为 `SearchResult[]` 和 V1 `Document[]`；可信度、去重、runtime controls、partial/error 语义保持现有路径。
+4. Search 结果成为 `SearchResult[]` 和 V1 `Document[]`；结果列表保持 search/result 原序，extraction 在固定预算内按 originating query 做 deterministic round-robin，可信度、去重、runtime controls、partial/error 语义保持现有路径。
 5. Synthesizer 产出 legacy findings、V1 `Finding[]` 和可选 Evidence；Evidence sidecar 不能替代 compatibility findings 或改变全局失败语义。
 6. Writer 消费 legacy findings/search inputs 与 outline，生成有序 sections/citations，显式双写 V1 `Report`；默认 serial，hard failure 时 all-or-nothing。
 7. 仅 completed run 后，P8 才投影 source-backed findings 到本地 Memory。Trace/Usage 记录运行；Evaluation 离线只读 State/Report/Evidence，产出 snapshot/benchmark，不修改该 run。
@@ -110,25 +110,41 @@ Cross-cutting：
 | Research Memory V1 | Implemented | Disabled | SQLite/lexical/provenance baseline；无 rollout、privacy UX、semantic ranking、真实 effectiveness 证据。 |
 | Planning Enhancement | Implemented | Enabled（既有 Planner 内） | P9 是 prompt/normalization + fake-only lexical baseline；不证明真实 provider 质量。 |
 | Offline Evaluation / calibration / repeatability | Implemented | Offline only | read-only；snapshot 绑定 evaluator、config 与 dataset content。 |
+| Quality-to-Action Advisory Contract | Implemented | Offline only | P11.1 统一 P5/P9/P10/runtime observations；只输出 `candidate/blocked/unavailable` advisory，不写 State 或触发 action。 |
 | Provider fallback / circuit breaker | Future | N/A | 需要两个 provider、availability SLO、taxonomy、policy、cross-provider observability。 |
 | Evidence selector | Future | N/A | P6 evidence sufficiency 未满足。 |
 | Reflection / replan / Supervisor | Future | N/A | 缺 quality-to-action protocol、bounded loop/budget、checkpoint/approval 语义。 |
 | Graph V2 / branch-join | Future | N/A | 仅在下文启动条件满足时评审。 |
-| P10 Research Coverage | Candidate / review only | N/A | 未批准、未设计、未实现、未 benchmark、非生产承诺。 |
+| P10.1 Research Coverage Baseline | Implemented | Offline only | deterministic fake-only；只读评估 plan/search outputs，不改生产默认、Graph/router、Writer 输入或 runtime ownership。 |
+| P10.2 Coverage Ordering | Implemented | Enabled inside deterministic_v2 | SearchExecutor extraction candidates 按 originating query round-robin；不增加 search/extract budget，不改 Graph/router/Writer/runtime ownership。 |
 
 ## Current Decision Point
 
-**P10 Research Coverage 只是 candidate/review。** 它不是已批准 milestone，不得描述成实现工作、Graph 改动或生产策略。
+**P10 Research Coverage 已关闭。** P10.1 建立 measurement-only baseline；P10.2 在 `SearchExecutor` 内实现 deterministic extraction coverage ordering。它不改变 Graph、router、Writer 输入、runtime ownership、默认预算或 provider policy。
 
-批准前，评审必须明确：
+**P11.1 Quality-to-Action Advisory Contract 已完成。** 新增 Evaluation-only contracts 与纯函数 adapters，将 P9 planning、P10 research coverage、P5 run/evidence/report quality、以及 runtime lifecycle/error/trace/usage observations 组合为 advisory recommendation。`ActionRecommendation.advisory` 固定为 `true`，状态只允许 `candidate`、`blocked`、`unavailable`；不写入 `ResearchState.next_action`，不修改 `status/current_stage/terminal_reason`，不触发 Graph edge，也不调用 Planner/Searcher/Writer。
 
-- P9 lexical planning checks 尚未解决、且用户可感知的具体 coverage 问题；
-- 固定、可复现的 coverage 定义与 deterministic fake-only baseline；
-- Graph V1 内的最小 intervention，且 Writer 输入、Report contract、runtime ownership 不变；
-- failure、deadline/budget、citation/provenance、Trace/Usage、Evaluation 的明确语义；
-- 为什么它优于保持当前 Planner/Searcher 行为不变。
+P11.1 三层边界：
 
-在此之前，保持 Evidence disabled、Memory disabled、Writer serial、无 fallback、无 Reflection，Graph V1 不变。
+- observed：Runtime adapter 只读取 `status`、`current_stage`、`terminal_reason`、`error`、`agent_trace`、`usage`；它不改变 Runtime lifecycle ownership。
+- derived：P5/P9/P10 evaluator metrics 通过纯 adapter 映射为 `QualitySignal`；既有 evaluator 语义不变，fake-only / rubric 结果仍不等于真实语义质量。
+- advisory：resolver 只返回结构化 action candidate/block；Runtime hard-stop facts 优先；`unavailable` 不等于 passed；failed signal 不自动获得执行权限。
+
+P11.1 contract snapshot 绑定 evaluator version、policy version、metric thresholds、source fields 与 input fingerprint；threshold policy 进入 snapshot/fingerprint。当前 action taxonomy 为 `continue`、`accept_partial`、`retry_research`、`replan`、`stop_fail`、`human_review`，但本阶段所有输出都保持 advisory。
+
+P10.1 observed before baseline：
+
+- dataset：`researchos_research_coverage` `p10.1.v1`，3 cases：AI regulation jurisdiction balance、clinical evidence practice translation、enterprise AI evaluation coverage。
+- metrics：`planned_query_facet_coverage`、`executed_query_facet_coverage`、`result_facet_coverage`、`extracted_facet_coverage`、`source_domain_balance`。
+- fixed config：`SEARCHER_MODE=deterministic_v2`、`max_search_times=3`、`max_extract_times=4`、`max_results_per_search=3`、`MIN_CREDIBILITY_SCORE=40`、`RESEARCH_MEMORY_ENABLED=false`、`EVIDENCE_ANALYZER_ENABLED=false`。
+- snapshot fingerprint：`2b85563ebf6019d6135fb09130815315275c6e6cb9c2f45491855af51df6f23a`；dataset content fingerprint：`62dc1abda05d0dcd4249fea726777514b171bccc8095fcfde141048c38c3aff1`；fake payload fingerprint：`068344c0a570977b1c0d782b7745850a269abcf11c14da3dfdba9a31e39d427e`。
+- observed before result：planned/executed/result/domain coverage means all `1.0`；`extracted_facet_coverage_mean=0.7111111111111111`；fully passing `0/3`；failed extracted facets are `china`、`outcome`、`procurement`。
+
+P10.2 observed after baseline：
+
+- ordering：每个已执行 query 先选 top-1 result，再按原 query 顺序选 top-2，继续直到 `max_extract_times`；每个 query 内原始 result ranking 保持不变；最终 `search_results` 列表原序保持不变。
+- observed after result：planned/executed/result/domain/extracted coverage means all `1.0`；fully passing `3/3`；`p10_2_candidate=false`；无 result/extracted failure case。
+- derived conclusion：当前 fake-only baseline 的 coverage failure 已被最小 deterministic extraction ordering 解决。不得据此宣称真实 provider 质量；不启动 Reflection、Supervisor、Graph V2、provider fallback、Evidence selector 或预算提高。
 
 ## Development Guardrails / DO NOT BREAK
 
@@ -158,6 +174,9 @@ Cross-cutting：
 | P7 | 试验 Writer section concurrency | bounded=2 scheduler、shared coordinator、deterministic assembly | 生产 Writer 保持 serial；无新 product/SLO 决策不继续扩展性能项目。 |
 | P8 | 建立最小 research memory | source-backed SQLite、lexical retrieval、bounded Planner/Searcher injection | 默认关闭；不引入 Memory Agent/vector DB。 |
 | P9 | 在既有 contract 内改善 planning quality | 6-case fake baseline、purpose labels、prompt/normalization | 不引入 replan、额外 LLM call、Graph change，也不宣称真实 provider 质量。 |
+| P10.1 | 建立 research coverage 测量基线 | 3-case fake baseline、plan/search/result/extracted/domain facet metrics、snapshot/fingerprint | measurement-only；暴露 extracted coverage failure；不实现 intervention。 |
+| P10.2 | 提高固定 extraction budget 下的 facet coverage | SearchExecutor extraction candidates by query round-robin；targeted ordering tests | 关闭 P10；不增加预算、不改生产默认控制流、不引入 replan/Graph V2。 |
+| P11.1 | 统一 quality-to-action advisory semantics | QualitySignal/ThresholdSpec/SignalProvenance/ActionRecommendation；P5/P9/P10/runtime adapters；deterministic decision matrix | Evaluation-only；不写 State、不改 Graph/router/Writer/runtime、不自动执行 action。 |
 
 ## Detailed History / Appendix
 
@@ -235,7 +254,37 @@ Cross-cutting：
 - P7：不切 Writer 默认，不继续扩大 Writer benchmark。
 - P8：baseline 关闭且默认关闭；不意味着 Memory V2 rollout。
 - P9：baseline 关闭；不引入 automatic replan/Reflection/Supervisor/Graph V2，也不形成生产策略。
+- P10.1：measurement-only baseline 关闭；fake-only observed extracted coverage failure 支持 P10.2 最小 intervention。
+- P10.2：coverage ordering 关闭；不继续扩大到 replan、Reflection、Supervisor、Graph V2、provider fallback、Evidence selector 或预算提高。
+- P11.1：advisory contract 关闭；已完成统一 signal/action 数据语义，但没有生产 action 权限。P11.2 仅在补齐真实 workload calibration、action authorization、bounded budget/termination、checkpoint/approval 和 merge contract 后评审。
 - measurement-contract governance 仍是 Evidence、provider、Reflection、Writer-default 等高风险改动前置条件；不得把 P5/P6/P7 observed 或 P8/P9 fake-only 数据直接转为生产 policy。
+
+### G. P10.1 Research Coverage Measurement Closure
+
+- 新增 `src/evaluation/research_coverage.py`、`src/evaluation/research_coverage_dataset.py`、`tests/test_research_coverage.py`；`src/evaluation/__init__.py` 仅导出 offline evaluation API。
+- evaluator 只读 `ResearchCoverageObservation(plan, executed_queries, search_results, documents)`；不构造 Graph、Agent、provider、Writer、Runtime，也不修改 State。
+- fake runner 在测试内使用 deterministic `SearchExecutor` + fake search/extract tools。固定 budget 为 search `3`、extract `4`、per-search results `3`；每 case 三个 planned facets/维度都有 search result 和 document，但第三个 query 的 facet 因当前顺序提取策略没有 full content。
+- Baseline observed：`planned_query_facet_coverage_mean=1.0`、`executed_query_facet_coverage_mean=1.0`、`result_facet_coverage_mean=1.0`、`source_domain_balance_mean=1.0`、`extracted_facet_coverage_mean=0.7111111111111111`、fully passing `0/3`。
+- P10.2 candidate was approved and implemented as the minimal SearchExecutor ordering change below.
+
+### H. P10.2 Deterministic Extraction Coverage Ordering Closure
+
+- `SearchExecutor` now selects extraction candidates by originating query: rank 1 from each executed query in query order, then rank 2 from each query, and so on until `max_extract_times` is reached. Search calls, extraction calls, default budgets, returned `SearchResult[]` order, Graph/router/Writer input/runtime ownership remain unchanged.
+- Targeted tests cover query count greater than extraction budget, query with no results, duplicate/invalid filtered results, partial extraction failure, deterministic ordering, and P10.1 before/after baseline comparison.
+- P10.1 before observed：planned/executed/result/domain coverage `1.0`；extracted coverage `0.7111111111111111`；fully passing `0/3`; P10.2 candidate `true`.
+- P10.2 after observed：planned/executed/result/domain/extracted coverage `1.0`；fully passing `3/3`; P10.2 candidate `false`.
+- Historical validation：targeted `tests/test_search_executor.py tests/test_research_coverage.py` = `17 passed, 1 warning`；full fake-only = `290 passed, 2 warnings`.
+- P10 closure recommendation：close P10. Further coverage work requires a new measurement contract with real provider/product metric evidence; do not continue by adding replan, Reflection, Supervisor, Graph V2, provider fallback, Evidence selector, or higher default budgets.
+
+### I. P11.1 Quality-to-Action Advisory Contract Closure
+
+- 新增 `src/evaluation/quality_action.py` 与 `tests/test_quality_action.py`；`src/evaluation/__init__.py` 仅导出 Evaluation API，不接入生产 Graph。
+- contracts：`QualitySignal`、`ThresholdSpec`、`SignalProvenance`、`ActionRecommendation`，以及只读组合结果 `QualityActionEvaluation`。Signal 支持 `passed/failed/unavailable/inconclusive`、`observed/derived`、`run/node/facet/document/claim/report`、deterministic、threshold、reason、provenance。
+- adapters：`planning_quality_signals`、`research_coverage_signals`、`run_evaluation_signals`、`runtime_observation_signals`。adapters 不重跑 LLM/search/provider；既有 P5/P9/P10 evaluator 不修改。
+- decision matrix：all pass -> `continue/candidate`；extraction facet failure -> `retry_research/blocked`；planning failure -> `replan/blocked`；Runtime budget/deadline/cancel/failure -> `stop_fail/candidate`；unavailable/conflicting -> `human_review/blocked`；partial output -> `accept_partial/blocked`。
+- observed/derived/advisory：Runtime 字段是 observed control-plane facts；P5/P9/P10 metrics 是 derived evaluation observations；recommendation 永远 advisory，不获得生产执行权限。
+- targeted validation：`tests/test_quality_action.py tests/test_planning_quality.py tests/test_research_coverage.py tests/test_offline_evaluation.py` = `30 passed, 1 warning`；覆盖 deterministic repeatability、threshold boundary、unavailable vs failed、precedence、hard-stop priority、conflict、read-only State 和 no external calls。
+- P11.1 当前结论：contract implementation complete；不建议直接进入自动 Reflection/P11.2。下一阶段只有在真实 workload calibration、action policy authorization、bounded loop/budget/termination、checkpoint/approval 语义齐备后，才可重新评审 P11.2。
 
 ## Graph V2 启动条件
 

@@ -152,6 +152,174 @@ def test_search_executor_enforces_extract_budget_and_returns_partial_results() -
     assert execution.error is None
 
 
+def test_search_executor_extracts_top_result_per_query_before_second_results() -> None:
+    search_tool = FakeSearchTool(
+        lambda query, _: [
+            _result(query, f"https://example.com/{query}-one"),
+            _result(query, f"https://example.com/{query}-two"),
+        ]
+    )
+    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
+    executor = SearchExecutor(
+        search_config=SearchConfig(
+            mode="deterministic_v2",
+            max_search_times=3,
+            max_extract_times=4,
+            max_results_per_search=2,
+        ),
+        search_tool=search_tool,
+        extract_tool=extract_tool,
+    )
+
+    execution = asyncio.run(executor.execute(["alpha", "beta", "gamma"]))
+
+    assert extract_tool.calls == [
+        "https://example.com/alpha-one",
+        "https://example.com/beta-one",
+        "https://example.com/gamma-one",
+        "https://example.com/alpha-two",
+    ]
+    assert [result.url for result in execution.search_results] == [
+        "https://example.com/alpha-one",
+        "https://example.com/alpha-two",
+        "https://example.com/beta-one",
+        "https://example.com/beta-two",
+        "https://example.com/gamma-one",
+        "https://example.com/gamma-two",
+    ]
+    assert execution.stats.extract_calls == 4
+
+
+def test_search_executor_respects_extract_budget_when_queries_exceed_budget() -> None:
+    search_tool = FakeSearchTool(
+        lambda query, _: [_result(query, f"https://example.com/{query}-one")]
+    )
+    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
+    executor = SearchExecutor(
+        search_config=SearchConfig(
+            mode="deterministic_v2",
+            max_search_times=3,
+            max_extract_times=2,
+        ),
+        search_tool=search_tool,
+        extract_tool=extract_tool,
+    )
+
+    execution = asyncio.run(executor.execute(["alpha", "beta", "gamma"]))
+
+    assert extract_tool.calls == [
+        "https://example.com/alpha-one",
+        "https://example.com/beta-one",
+    ]
+    assert execution.stats.search_calls == 3
+    assert execution.stats.extract_calls == 2
+
+
+def test_search_executor_round_robin_skips_queries_with_no_results() -> None:
+    def search(query: str, _: int) -> list[dict[str, str]]:
+        if query == "empty":
+            return []
+        return [
+            _result(query, f"https://example.com/{query}-one"),
+            _result(query, f"https://example.com/{query}-two"),
+        ]
+
+    search_tool = FakeSearchTool(search)
+    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
+    executor = SearchExecutor(
+        search_config=SearchConfig(
+            mode="deterministic_v2",
+            max_search_times=3,
+            max_extract_times=3,
+        ),
+        search_tool=search_tool,
+        extract_tool=extract_tool,
+    )
+
+    asyncio.run(executor.execute(["empty", "alpha", "beta"]))
+
+    assert extract_tool.calls == [
+        "https://example.com/alpha-one",
+        "https://example.com/beta-one",
+        "https://example.com/alpha-two",
+    ]
+
+
+def test_search_executor_round_robin_uses_deduplicated_and_valid_results() -> None:
+    def search(query: str, _: int) -> list[dict[str, str]]:
+        if query == "alpha":
+            return [
+                _result(query, "https://example.com/shared/#fragment"),
+                _result(query, "not a url"),
+                _result(query, "https://example.com/alpha-two"),
+            ]
+        return [
+            _result(query, "https://example.com/shared"),
+            _result(query, "https://example.com/beta-two"),
+        ]
+
+    search_tool = FakeSearchTool(search)
+    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
+    executor = SearchExecutor(
+        search_config=SearchConfig(
+            mode="deterministic_v2",
+            max_search_times=2,
+            max_extract_times=3,
+        ),
+        search_tool=search_tool,
+        extract_tool=extract_tool,
+    )
+
+    execution = asyncio.run(executor.execute(["alpha", "beta"]))
+
+    assert [result.url for result in execution.search_results] == [
+        "https://example.com/shared/#fragment",
+        "https://example.com/alpha-two",
+        "https://example.com/beta-two",
+    ]
+    assert extract_tool.calls == [
+        "https://example.com/shared/#fragment",
+        "https://example.com/beta-two",
+        "https://example.com/alpha-two",
+    ]
+
+
+def test_search_executor_continues_round_robin_after_partial_extraction_failure() -> None:
+    def extract(url: str) -> str:
+        if url.endswith("alpha-one"):
+            raise RuntimeError("fake extraction failure")
+        return f"content for {url}"
+
+    search_tool = FakeSearchTool(
+        lambda query, _: [_result(query, f"https://example.com/{query}-one")]
+    )
+    extract_tool = FakeExtractTool(extract)
+    executor = SearchExecutor(
+        search_config=SearchConfig(
+            mode="deterministic_v2",
+            max_search_times=3,
+            max_extract_times=3,
+        ),
+        search_tool=search_tool,
+        extract_tool=extract_tool,
+    )
+
+    execution = asyncio.run(executor.execute(["alpha", "beta", "gamma"]))
+
+    assert extract_tool.calls == [
+        "https://example.com/alpha-one",
+        "https://example.com/beta-one",
+        "https://example.com/gamma-one",
+    ]
+    assert [result.content for result in execution.search_results] == [
+        None,
+        "content for https://example.com/beta-one",
+        "content for https://example.com/gamma-one",
+    ]
+    assert execution.stats.extract_calls == 3
+    assert execution.stats.failed_calls == 1
+
+
 def test_search_executor_returns_partial_results_after_timeout_when_allowed() -> None:
     async def slow_extract(_: str) -> str:
         await asyncio.sleep(0.2)

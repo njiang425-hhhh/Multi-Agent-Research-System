@@ -1,7 +1,7 @@
 """深度研究代理的配置管理。"""
 
 import os
-from typing import Optional
+from typing import Literal, Optional
 from pathlib import Path
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -111,6 +111,52 @@ class ResearchConfig(BaseModel):
     min_section_words: int = Field(
         default=200,
         description="每个章节的最少字数"
+    )
+
+    writer_section_execution_mode: Literal["serial", "bounded"] = Field(
+        default=os.getenv("WRITER_SECTION_EXECUTION_MODE", "serial"),
+        description="Writer 章节执行模式：'serial' 或实验性 'bounded'"
+    )
+
+    writer_section_concurrency: int = Field(
+        default=int(os.getenv("WRITER_SECTION_CONCURRENCY", "2")),
+        ge=1,
+        description="实验性 bounded Writer 章节并发上限"
+    )
+
+    research_memory_enabled: bool = Field(
+        default=os.getenv("RESEARCH_MEMORY_ENABLED", "false").lower()
+        in {"1", "true", "yes", "on"},
+        description="启用本地 Research Memory V1 baseline"
+    )
+
+    research_memory_store_path: str = Field(
+        default=os.getenv("RESEARCH_MEMORY_STORE_PATH", ".cache/research_memory/memory.db"),
+        description="本地 Research Memory SQLite 路径"
+    )
+
+    research_memory_ttl_days: int = Field(
+        default=int(os.getenv("RESEARCH_MEMORY_TTL_DAYS", "30")),
+        ge=1,
+        description="Research Memory 默认保留天数"
+    )
+
+    research_memory_max_records: int = Field(
+        default=int(os.getenv("RESEARCH_MEMORY_MAX_RECORDS", "500")),
+        ge=1,
+        description="Research Memory 本地 store 最大记录数"
+    )
+
+    research_memory_retrieval_limit: int = Field(
+        default=int(os.getenv("RESEARCH_MEMORY_RETRIEVAL_LIMIT", "3")),
+        ge=0,
+        description="Planner/Searcher 每次最多检索的 memory 数"
+    )
+
+    research_memory_search_hint_limit: int = Field(
+        default=int(os.getenv("RESEARCH_MEMORY_SEARCH_HINT_LIMIT", "2")),
+        ge=0,
+        description="Searcher 从 memory provenance 派生的最多 source hint 查询数"
     )
     
     # 引用配置

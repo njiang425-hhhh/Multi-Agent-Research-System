@@ -86,6 +86,48 @@ class OperationExecutionResult(Generic[_Result]):
     attempts: list[OperationAttempt]
 
 
+class ExecutionContextCoordinator:
+    """Async-safe owner for one shared run ExecutionContext."""
+
+    def __init__(self, context: Optional[ExecutionContext]) -> None:
+        self._context = context
+        self._lock = asyncio.Lock()
+
+    @property
+    def context(self) -> Optional[ExecutionContext]:
+        return self._context
+
+    async def reserve_attempt(self, *, local_deadline: float) -> tuple[float, Optional[ExecutionContext]]:
+        """Atomically check deadline and consume one operation call."""
+
+        async with self._lock:
+            try:
+                timeout = _effective_timeout(local_deadline=local_deadline, context=self._context)
+                self._context = _consume_operation_budget(self._context)
+            except (OperationBudgetExhausted, OperationDeadlineExceeded) as error:
+                if error.context is not None:
+                    self._context = error.context
+                raise
+            return timeout, self._context
+
+    async def effective_timeout(self, *, local_deadline: float) -> float:
+        """Read the effective remaining timeout from the latest context."""
+
+        async with self._lock:
+            return _effective_timeout(local_deadline=local_deadline, context=self._context)
+
+    async def stopped_deadline(self) -> Optional[ExecutionContext]:
+        """Persist a runtime deadline stop reason on the latest context."""
+
+        async with self._lock:
+            if self._context is not None:
+                self._context = self._context.stopped("deadline_exhausted")
+            return self._context
+
+
+ExecutionContextLike = Optional[ExecutionContext | ExecutionContextCoordinator]
+
+
 def is_retryable_error(error: BaseException, *, retry_unknown_errors: bool) -> bool:
     """Use a normalized typed signal; unknown errors need explicit opt-in."""
 
@@ -133,12 +175,49 @@ def _consume_operation_budget(context: Optional[ExecutionContext]) -> Optional[E
     return context.after_operation_call()
 
 
+async def _reserve_attempt(
+    *,
+    local_deadline: float,
+    context: ExecutionContextLike,
+) -> tuple[float, Optional[ExecutionContext]]:
+    if isinstance(context, ExecutionContextCoordinator):
+        return await context.reserve_attempt(local_deadline=local_deadline)
+    timeout = _effective_timeout(local_deadline=local_deadline, context=context)
+    return timeout, _consume_operation_budget(context)
+
+
+async def _latest_context(context: ExecutionContextLike) -> Optional[ExecutionContext]:
+    if isinstance(context, ExecutionContextCoordinator):
+        return context.context
+    return context
+
+
+async def _deadline_stopped_context(
+    context: ExecutionContextLike,
+    current_context: Optional[ExecutionContext],
+) -> Optional[ExecutionContext]:
+    if isinstance(context, ExecutionContextCoordinator):
+        return await context.stopped_deadline()
+    return current_context.stopped("deadline_exhausted") if current_context else None
+
+
+async def _remaining_timeout(
+    *,
+    local_deadline: float,
+    context: ExecutionContextLike,
+    current_context: Optional[ExecutionContext],
+) -> float:
+    if isinstance(context, ExecutionContextCoordinator):
+        return await context.effective_timeout(local_deadline=local_deadline)
+    return _effective_timeout(local_deadline=local_deadline, context=current_context)
+
+
 async def execute_operation(
     operation: Callable[[], Awaitable[_Result]],
     *,
     policy: OperationExecutionPolicy,
     local_deadline: float,
-    context: Optional[ExecutionContext],
+    context: ExecutionContextLike,
     on_attempt: Optional[Callable[[OperationAttempt], None]] = None,
 ) -> OperationExecutionResult[_Result]:
     """Execute one operation under the intersection of local and run policy.
@@ -148,13 +227,15 @@ async def execute_operation(
     error and exposes retry signals; it cannot choose fallback behavior here.
     """
 
-    current_context = context
+    current_context = await _latest_context(context)
     attempts: list[OperationAttempt] = []
     last_error: BaseException | None = None
 
     for attempt in range(1, policy.max_retries + 2):
-        timeout = _effective_timeout(local_deadline=local_deadline, context=current_context)
-        current_context = _consume_operation_budget(current_context)
+        timeout, current_context = await _reserve_attempt(
+            local_deadline=local_deadline,
+            context=context if isinstance(context, ExecutionContextCoordinator) else current_context,
+        )
         started = perf_counter()
         try:
             value = await asyncio.wait_for(operation(), timeout=timeout)
@@ -164,9 +245,13 @@ async def execute_operation(
             attempts.append(record)
             if on_attempt is not None:
                 on_attempt(record)
-            return OperationExecutionResult(value=value, context=current_context, attempts=attempts)
+            return OperationExecutionResult(
+                value=value,
+                context=await _latest_context(context) if isinstance(context, ExecutionContextCoordinator) else current_context,
+                attempts=attempts,
+            )
         except asyncio.TimeoutError as error:
-            stopped_context = current_context.stopped("deadline_exhausted") if current_context else None
+            stopped_context = await _deadline_stopped_context(context, current_context)
             record = OperationAttempt(
                 attempt=attempt,
                 success=False,
@@ -202,17 +287,19 @@ async def execute_operation(
                 # Failure callers need the advanced context to persist a
                 # budget/deadline-consistent terminal patch and trace.
                 try:
-                    setattr(error, "execution_context", current_context)
+                    setattr(error, "execution_context", await _latest_context(context))
                 except (AttributeError, TypeError):
                     pass
                 raise
             if policy.honor_retry_after and retry_after:
-                remaining = _effective_timeout(
-                    local_deadline=local_deadline, context=current_context
+                remaining = await _remaining_timeout(
+                    local_deadline=local_deadline,
+                    context=context,
+                    current_context=current_context,
                 )
                 if retry_after >= remaining:
                     try:
-                        setattr(error, "execution_context", current_context)
+                        setattr(error, "execution_context", await _latest_context(context))
                     except (AttributeError, TypeError):
                         pass
                     raise
