@@ -50,6 +50,28 @@ from src.evaluation.quality_action import (
     run_evaluation_signals,
     runtime_observation_signals,
 )
+from src.evaluation.action_authorization import (
+    ACTION_AUTHORIZATION_VERSION,
+    ACTION_ELIGIBILITY_POLICY_VERSION,
+    ActionAuthorization,
+    ActionBudget,
+    ActionDeadlinePolicy,
+    ActionEligibilityDecision,
+    ActionFailurePolicy,
+    ActionPartialPolicy,
+    ActionProvenance,
+    ActionReadinessCheck,
+    ActionTarget,
+    NoProgressPolicy,
+    StateTransitionRule,
+    action_authorization_content_fingerprint,
+    evaluate_action_eligibility,
+    validate_accept_partial_readiness,
+    validate_action_readiness,
+    validate_human_review_readiness,
+    validate_replan_readiness,
+    validate_retry_research_readiness,
+)
 from src.evaluation.runner import run_offline_evaluation
 from src.evaluation.snapshot import (
     EVALUATION_SNAPSHOT_VERSION,
@@ -58,4 +80,4 @@ from src.evaluation.snapshot import (
     validate_evaluation_snapshot,
 )
 
-__all__ = ["ActionRecommendation", "BENCHMARK_VERSION", "CALIBRATION_VERSION", "DEFAULT_EVIDENCE_BENCHMARK_MODES", "EVALUATOR_VERSION", "EVALUATION_SNAPSHOT_VERSION", "FIXED_EVALUATION_DATASET", "QUALITY_ACTION_EVALUATOR_VERSION", "QUALITY_ACTION_POLICY_VERSION", "QualityActionEvaluation", "QualitySignal", "REAL_WORKLOAD_BENCHMARK_VERSION", "REFERENCE_CALIBRATION_DATASET", "REPEATABILITY_BENCHMARK_VERSION", "RESEARCH_COVERAGE_DATASET", "RESEARCH_COVERAGE_EVALUATOR_VERSION", "RESEARCH_COVERAGE_METRICS", "RepeatabilityDecisionCriteria", "SignalProvenance", "ThresholdSpec", "archive_real_workload_benchmark", "archive_repeatability_benchmark", "build_evaluation_snapshot", "build_quality_action_advisory", "calibration_content_fingerprint", "evaluate_research_coverage", "evaluation_dataset_content_fingerprint", "manual_deepseek_tavily_runner", "planning_quality_signals", "quality_action_content_fingerprint", "recommend_action", "refresh_real_workload_derived_metrics", "refresh_repeatability_derived_metrics", "research_coverage_content_fingerprint", "research_coverage_signals", "run_evaluation_signals", "run_evidence_value_benchmark", "run_offline_evaluation", "run_real_workload_benchmark", "run_repeatability_benchmark", "run_rubric_calibration", "runtime_observation_signals", "evaluate_run"]
+__all__ = ["ACTION_AUTHORIZATION_VERSION", "ACTION_ELIGIBILITY_POLICY_VERSION", "ActionAuthorization", "ActionBudget", "ActionDeadlinePolicy", "ActionEligibilityDecision", "ActionFailurePolicy", "ActionPartialPolicy", "ActionProvenance", "ActionReadinessCheck", "ActionRecommendation", "ActionTarget", "BENCHMARK_VERSION", "CALIBRATION_VERSION", "DEFAULT_EVIDENCE_BENCHMARK_MODES", "EVALUATOR_VERSION", "EVALUATION_SNAPSHOT_VERSION", "FIXED_EVALUATION_DATASET", "NoProgressPolicy", "QUALITY_ACTION_EVALUATOR_VERSION", "QUALITY_ACTION_POLICY_VERSION", "QualityActionEvaluation", "QualitySignal", "REAL_WORKLOAD_BENCHMARK_VERSION", "REFERENCE_CALIBRATION_DATASET", "REPEATABILITY_BENCHMARK_VERSION", "RESEARCH_COVERAGE_DATASET", "RESEARCH_COVERAGE_EVALUATOR_VERSION", "RESEARCH_COVERAGE_METRICS", "RepeatabilityDecisionCriteria", "SignalProvenance", "StateTransitionRule", "ThresholdSpec", "action_authorization_content_fingerprint", "archive_real_workload_benchmark", "archive_repeatability_benchmark", "build_evaluation_snapshot", "build_quality_action_advisory", "calibration_content_fingerprint", "evaluate_action_eligibility", "evaluate_research_coverage", "evaluation_dataset_content_fingerprint", "manual_deepseek_tavily_runner", "planning_quality_signals", "quality_action_content_fingerprint", "recommend_action", "refresh_real_workload_derived_metrics", "refresh_repeatability_derived_metrics", "research_coverage_content_fingerprint", "research_coverage_signals", "run_evaluation_signals", "run_evidence_value_benchmark", "run_offline_evaluation", "run_real_workload_benchmark", "run_repeatability_benchmark", "run_rubric_calibration", "runtime_observation_signals", "validate_accept_partial_readiness", "validate_action_readiness", "validate_human_review_readiness", "validate_replan_readiness", "validate_retry_research_readiness", "evaluate_run"]

@@ -2,32 +2,80 @@
 
 > 本文是下一会话唯一交接基线；若与历史 handoff、提交记录或旧测试结论冲突，以当前源码和本文为准。
 >
-> 最后更新：2026-08-22。P0-P10 已正式关闭；P10.2 deterministic extraction coverage ordering 已完成。P11.1 Quality-to-Action Advisory Contract 已完成，但仍保持 Evaluation-only advisory 边界。
+> 最后更新：2026-08-23。ResearchOS 是轻量级、个人/学习/展示型 multi-agent research project。P0-P10 已正式关闭；P11-P13 作为 Advanced Architecture Exploration 已完成并冻结。没有自动 action dispatch 或生产 rollout。
 
 ## 目录
 
-1. Project Snapshot（项目快照）
-2. Current Architecture（当前架构）
-3. End-to-End Research Flow（端到端研究流程）
-4. Core Data Flow / Agent I/O（核心数据流与 Agent I/O）
-5. Capability Status Matrix（能力状态矩阵）
-6. Current Decision Point（当前决策点）
-7. Development Guardrails / DO NOT BREAK（开发护栏）
-8. P0-P9 Milestone Map（里程碑地图）
-9. Detailed History / Appendix（详细历史与附录）
-10. Graph V2 启动条件、长期演进方向与下一会话启动
+1. Project Scope / Positioning（项目定位）
+2. Project Snapshot（项目快照）
+3. Current Decision Point（当前决策点）
+4. Definition of Done（完成定义）
+5. Current Architecture（当前架构）
+6. End-to-End Research Flow（端到端研究流程）
+7. Core Data Flow / Agent I/O（核心数据流与 Agent I/O）
+8. Capability Status Matrix（能力状态矩阵）
+9. Development Guardrails / DO NOT BREAK（开发护栏）
+10. Milestone Map（里程碑地图）
+11. Optional Future / Productionization（可选未来工作）
+12. Detailed History / Appendix（详细历史与附录）
+13. 下一会话启动
+
+## Project Scope / Positioning
+
+ResearchOS 是一个 **lightweight multi-agent research project**，面向个人使用、学习和能力展示。它的优先级是让四 Agent 研究主链可运行、结果可解释、来源/provenance 可追溯，并用小而稳定的 contract 展示研究系统的工程边界。
+
+- **核心目标**：Query 到 plan、search、findings、带引用 report 的完整研究体验；可重复的质量/coverage 评估；轻量 Memory 与 bounded adaptive research 的演示能力。
+- **非目标**：将此仓库演进为 enterprise production-grade Agent Platform，或把架构实验变为必须上线的治理平台。
+- **工作取向**：优先 Agent research capability、可解释性、可运行性和 showcase；复杂治理/执行机制可以保留为设计与代码实验，但不驱动主路线。
+
+### Explicit Non-Goals
+
+- production RBAC、OIDC 或 SAML 集成。
+- enterprise approval、audit 或合规留存平台。
+- production SLA、rollout governance 或 on-call 运营体系。
+- complex distributed action runtime、跨服务事务或 production exactly-once workflow guarantees。
+- provider fallback、circuit breaker 或跨 provider 调度策略。
+- 没有真实 Agent 需求时的 Graph V2。
+- arbitrary autonomous action execution。
 
 ## Project Snapshot
 
 | 项目 | 当前事实 |
 |---|---|
-| 产品目标 | 面向来源的研究 Agent：把用户 Query 转为结构化计划、搜索来源、综合 Findings 和带引用的 Report，同时保持 runtime、provenance 与 Evaluation 边界。 |
-| 当前阶段 | P0-P10 已正式关闭；P11.1 advisory contract 已完成。系统保持 Graph V1，未获得任何生产 action 执行权限。 |
+| 项目定位 | **轻量级、个人/学习/展示型 Multi-Agent Research System**；不以 enterprise production readiness 为目标。 |
+| 核心研究能力 | 面向来源的研究 Agent：把用户 Query 转为结构化计划、搜索来源、综合 Findings 和带引用的 Report，同时保持 runtime、provenance 与 Evaluation 边界。 |
+| 当前阶段 | P0-P10 Foundation / Research Quality 已关闭。P11-P13 是已完成、冻结的 Advanced Architecture Exploration，不要求 productionize。主线转向 P14-P17 capability closure。 |
 | Graph | 固定线性 Graph V1：`Planner -> Searcher -> Synthesizer -> Writer`。现有 router、Writer 输入、legacy 主链和 Report contract 不变。 |
 | Provider / Search | 当前默认运行组合：DeepSeek + Tavily + `deterministic_v2`。`SearchExecutor` 拥有确定性 search 与 round-robin-by-query extraction ordering；`legacy_agent` 仅显式兼容。 |
 | 默认开关 | `EVIDENCE_ANALYZER_ENABLED=false`；`RESEARCH_MEMORY_ENABLED=false`；`WRITER_SECTION_EXECUTION_MODE=serial`。Writer `bounded` 需显式开启，实验 bound 默认 `2`。 |
-| 测试基线 | fake-only 全量：**303 passed，2 个既有 Pydantic deprecation warnings**。CI 使用 Python 3.11 与固定 pytest `--basetemp`；真实 provider 验证仅手工执行，不进 CI。 |
-| 当前决策 | 不改 Graph/router/Writer/runtime ownership。P11.1 只统一 quality observations 并输出 advisory recommendation；不自动 routing、re-search、replan 或 Reflection。 |
+| 测试基线 | fake-only 全量：**343 passed，2 个既有 Pydantic deprecation warnings**。CI 使用 Python 3.11 与固定 pytest `--basetemp`；真实 provider 验证仅手工执行，不进 CI。 |
+| Advanced experiment | P11 advisory、P12 eligibility、P13 ledger/human-review handler 展示治理设计能力；仍保持 contract-only/default-off，不是项目的核心产品路径。 |
+| 下一步 | P14 Light Reflection / Adaptive Research、P15 Memory Demo Activation、P16 End-to-End Showcase & Evaluation、P17 Documentation / Cleanup / Release，然后 DONE。 |
+
+## Current Decision Point
+
+**主线已经从治理执行探索切回 Agent capability。** P11.1、P12.1、P13.1 与 P13.2 作为 **Advanced Architecture Exploration** 已完成并冻结：它们保留为可阅读、可测试的 contract/control-plane 示例，但不继续推进为 production human-review workflow、企业审批系统或自动 action 平台。
+
+当前按以下顺序推进：
+
+1. **P14 Light Reflection / Adaptive Research**：在 Graph V1 与 Runtime ownership 内，定义一个轻量、bounded、可终止的研究自适应能力；不引入 Supervisor、自动 replan 或任意 action execution。
+2. **P15 Memory Demo Activation**：以 P8 local/default-off memory 为基础，做可演示的受限 activation 与效果观察；不升级为 semantic/vector 或个人化记忆系统。
+3. **P16 End-to-End Showcase & Evaluation**：完成 3-5 个真实 showcase tasks，并保留 planning、coverage、report evaluation 的可复现 archive。
+4. **P17 Documentation / Cleanup / Release**：完善 README、architecture、quick start、demo 和回归说明，完成展示型 release。
+
+保持现有护栏：Graph V1、router、Writer input、legacy contracts 与 Runtime ownership 不变；Evaluation 继续 read-only，不能成为 production gate。P13 的 runner production integration、RBAC、approval SLA、enterprise audit 与 rollout 统一移入 Optional Future / Productionization。
+
+## Definition of Done
+
+项目在满足以下条件时即可收尾，不需要 enterprise productionization：
+
+- 四 Agent 主链稳定运行：Planner、Searcher、Synthesizer、Writer 能完成来源驱动的报告输出。
+- 至少完成 3-5 个真实 showcase tasks，并能展示 plan、来源、findings、report 与关键运行信息。
+- planning、coverage、report evaluation 可复现，且保留其 dataset/config/snapshot 或 archive。
+- 至少一个轻量、bounded adaptive research 能力可演示。
+- P8 Memory 能以受限、可解释的方式演示。
+- README、architecture、quick start 和 demo 资料完整。
+- fake-only regression 稳定；真实 provider 验证保持手工 showcase，不作为 CI 或 production gate。
 
 ## Current Architecture
 
@@ -100,25 +148,41 @@ Cross-cutting：
 
 ## Capability Status Matrix
 
+### Core / Showcase Capabilities
+
 | 能力 | 状态 | 默认 | 当前决策 / 限制 |
 |---|---|---|---|
 | Graph V1 线性研究流 | Implemented | Enabled | 保持 `Planner -> Searcher -> Synthesizer -> Writer`。 |
 | Deterministic Search | Implemented | Enabled | `deterministic_v2` + `SearchExecutor`；`legacy_agent` 仅兼容。 |
 | Evidence sidecar | Implemented | Disabled | P5/P6 不足以支持默认启用或 selector。 |
-| Writer serial scheduling | Implemented | Enabled | 生产默认保持 serial。 |
+| Writer serial scheduling | Implemented | Enabled | 展示默认保持 serial。 |
 | Writer bounded sections | Implemented | Experimental | 显式 `bounded`，默认 bound=2；P7 仅证明本地 Writer 加速。 |
-| Research Memory V1 | Implemented | Disabled | SQLite/lexical/provenance baseline；无 rollout、privacy UX、semantic ranking、真实 effectiveness 证据。 |
+| Research Memory V1 | Implemented | Disabled | SQLite/lexical/provenance baseline；P15 将把它作为可解释的 demo 能力激活。 |
 | Planning Enhancement | Implemented | Enabled（既有 Planner 内） | P9 是 prompt/normalization + fake-only lexical baseline；不证明真实 provider 质量。 |
 | Offline Evaluation / calibration / repeatability | Implemented | Offline only | read-only；snapshot 绑定 evaluator、config 与 dataset content。 |
-| Quality-to-Action Advisory Contract | Implemented | Offline only | P11.1 统一 P5/P9/P10/runtime observations；只输出 `candidate/blocked/unavailable` advisory，不写 State 或触发 action。 |
-| Provider fallback / circuit breaker | Future | N/A | 需要两个 provider、availability SLO、taxonomy、policy、cross-provider observability。 |
-| Evidence selector | Future | N/A | P6 evidence sufficiency 未满足。 |
-| Reflection / replan / Supervisor | Future | N/A | 缺 quality-to-action protocol、bounded loop/budget、checkpoint/approval 语义。 |
-| Graph V2 / branch-join | Future | N/A | 仅在下文启动条件满足时评审。 |
-| P10.1 Research Coverage Baseline | Implemented | Offline only | deterministic fake-only；只读评估 plan/search outputs，不改生产默认、Graph/router、Writer 输入或 runtime ownership。 |
-| P10.2 Coverage Ordering | Implemented | Enabled inside deterministic_v2 | SearchExecutor extraction candidates 按 originating query round-robin；不增加 search/extract budget，不改 Graph/router/Writer/runtime ownership。 |
+| P10 Research Coverage | Implemented | Enabled inside deterministic_v2 | extraction candidates 按 originating query round-robin；不增加预算，不改 Graph/router/Writer/runtime ownership。 |
+| P14 Light Reflection / Adaptive Research | Next | N/A | 轻量、bounded、可终止；先服务 research showcase，不启动 Supervisor 或 enterprise action runtime。 |
+| P16 Showcase & Evaluation | Planned | N/A | 3-5 个真实任务、可复现 archive、端到端展示。 |
+| P17 Documentation / Release | Planned | N/A | README、architecture、quick start、demo、cleanup。 |
 
-## Current Decision Point
+### Advanced Architecture / Future
+
+| 能力 | 状态 | 默认 | 当前决策 / 限制 |
+|---|---|---|---|
+| Quality-to-Action Advisory Contract | Implemented | Offline only | P11.1 统一 P5/P9/P10/runtime observations；只输出 `candidate/blocked/unavailable` advisory，不写 State 或触发 action。 |
+| Action Authorization & Eligibility Contract | Frozen exploration | Contract only | P12.1 的 deterministic eligibility design；不是核心产品路径，也不接入自动执行。 |
+| Generic Action Execution Infrastructure | Frozen exploration | Control plane only | P13.1 的 immutable request/ledger/CAS/recovery 示例；无 dispatcher 或 State transition。 |
+| Checkpointed Human Review | Frozen exploration | Explicit/default off | P13.2 的 fake-only handler/receipt/resume-adapter contract；不做 production runner integration。 |
+| Provider fallback / circuit breaker | Optional Future | N/A | 仅在真实多 provider 需求出现时评审。 |
+| Evidence selector | Future | N/A | P6 evidence sufficiency 未满足。 |
+| Supervisor / parallel branch-join | Optional Future | N/A | 不属于 P14 light adaptation；须由真实 Agent capability requirement 驱动。 |
+| Graph V2 | Optional Future | N/A | 只有 Graph V1 无法承载明确 showcase/capability requirement 时才评审。 |
+| Production human approval / enterprise action platform | Optional Productionization | N/A | P13.3 runner integration、RBAC、audit、SLA/rollout 都移入此处，不是 backlog。 |
+| Semantic/vector memory | Optional Future | N/A | P15 只激活现有 local lexical baseline。 |
+
+## Advanced Architecture Exploration (Frozen)
+
+P11-P13 统一定位为 **Advanced Architecture Exploration**：它们展示 advisory、authorization、durable control-plane 与 checkpointed human-review 的治理设计能力，保留重要的确定性测试、边界与历史决策；它们不是 core research capability，也不构成继续建设 enterprise execution platform 的承诺。除非未来出现明确的个人/showcase Agent 需求，否则不做 production runner integration、RBAC、approval SLA、enterprise audit 或自动 action dispatch。
 
 **P10 Research Coverage 已关闭。** P10.1 建立 measurement-only baseline；P10.2 在 `SearchExecutor` 内实现 deterministic extraction coverage ordering。它不改变 Graph、router、Writer 输入、runtime ownership、默认预算或 provider policy。
 
@@ -131,6 +195,33 @@ P11.1 三层边界：
 - advisory：resolver 只返回结构化 action candidate/block；Runtime hard-stop facts 优先；`unavailable` 不等于 passed；failed signal 不自动获得执行权限。
 
 P11.1 contract snapshot 绑定 evaluator version、policy version、metric thresholds、source fields 与 input fingerprint；threshold policy 进入 snapshot/fingerprint。当前 action taxonomy 为 `continue`、`accept_partial`、`retry_research`、`replan`、`stop_fail`、`human_review`，但本阶段所有输出都保持 advisory。
+
+**P12.1 Action Authorization & Eligibility Contract 已完成。** 新增独立、deterministic、read-only contract layer。`ActionAuthorization` 明确 allowed action、target stage/node、max executions、local budget、deadline/no-progress/failure/partial policy 和 durable provenance；`ActionEligibilityDecision` 独立使用 `eligible/blocked/unavailable`，不会改变 P11 `ActionRecommendation.candidate/blocked/unavailable` 的 advisory 语义。
+
+P12.1 三层边界：
+
+- authorization：显式的单 action authority，不是 executor request；`ActionProvenance` 为未来 durable ledger 预留 authorization/action identity、grantor、recommendation/state fingerprint 与 source signal IDs。
+- eligibility：只读取 advisory、authorization、targetable deficit、`ExecutionContext` remaining deadline/operation budget、action-local limits、per-action preconditions 和 calibration/readiness；authorization provenance 必须 fingerprint-bind 到当前 advisory。effective deadline = `min(run remaining, authorization deadline, local action limit)`；action budget 只能收紧 Runtime remaining budget，不能重置或扩大。
+- execution：仍未实现。没有 action queue、ledger、retry loop、State merge、checkpoint mutation、Graph edge、Agent/Graph/provider call 或 Evaluation production gate。
+
+P12.1 readiness validators：`retry_research` 要求 `search` target、coverage deficit、selectors、显式 business-retry-not-operation-retry 和 bounded search/extract/operation budget；`replan` 要求 plan target、plan replacement 与 downstream invalidation contract；`accept_partial` 要求 product partial-output contract；`human_review` 要求 approval scope 和 approval workflow contract。每个 validator 只返回未来 State merge/replacement/invalidation/attribution rule representation。operation retry 仍是 Runtime-owned 的同一 provider/tool attempt retry；business-level `retry_research` 是独立授权、独立 target/budget 的未来 action。
+
+**P13.1 Generic Action Execution Infrastructure 已完成。** `ActionExecutionRequest` 将 action/request/run/thread/target、authorization/recommendation/state binding、expected checkpoint revision、effective budget/deadline snapshot 与 idempotency key 固化为 immutable request。独立 SQLite ledger 记录 `queued`、`claimed`、`executing`、`waiting_approval` 及六种 terminal lifecycle，包含 revision、attempt、worker/lease owner、timestamps、input/output/state-transition fingerprints、error 与 recovery marker。
+
+P13.1 四层边界：
+
+- request：只表达一个已授权 logical action，不是 dispatch command；duplicate request 只返回同一 action，content conflict 被拒绝。
+- ledger：CAS revision + action/idempotency uniqueness 只保证一个 logical action 和一次 logical commit record；external effect 仍是 at-least-once，crash after external execution before commit 会安全终结为 unknown outcome，绝不自动重放或 commit State。
+- executor：仅定义 `ActionExecutor` interface，未注册 handler、未自动 dispatch、未调用 Agent/Graph/provider。
+- State transition：仍未实现。commit 仅记录 future transition fingerprint；未来 applier 必须在 Runtime-owned checkpoint boundary 重验 authorization/checkpoint/state/runtime，并负责 actual State mutation。
+
+P13.1 lease/runtime：claim、executing marker、waiting marker、commit 与 recovery 都短时取得现有 checkpoint `thread_id` lease；waiting 不持锁。每次 claim/commit 重验 run/thread、authorization/recommendation/state fingerprint、checkpoint revision、deadline、operation budget 与 cancelled/terminal facts。action budget 只能收紧 current Runtime remaining budget，不能重置 `ExecutionContext`。trace metadata 已定义 action/request/authorization/attempt/transition/worker/lease/error/recovery attribution，但未改变 Usage 或既有 Trace store。
+
+**P13.2 Checkpointed Human Review 已完成。** `CheckpointedHumanReviewHandler` 只接受 `human_review` 的 eligible、authorization-bound request，先将 ledger 从 `queued -> claimed -> waiting_approval`，然后释放 thread lease。`ApprovalRequest` 固化 allowed role、run/thread、authorization、checkpoint/state binding；`ApprovalPayload` 是明确的 approve/reject 人工输入；SQLite `ApprovalReceipt` 以 action/idempotency 唯一约束 first terminal approval wins。
+
+P13.2 approval/resume：相同 payload 返回同一 receipt，冲突 approval 被拒绝；reject terminalizes action 且不调用 resume adapter。approve 只产生 persisted pending receipt，**不会自动 resume**。runner boundary 必须显式调用 handler 的 `resume_approved`；它重验 authorization/checkpoint/state/runtime 后，从 `waiting_approval` CAS claim，记录一次 resume attempt，再通过 injected `CheckpointResumeAdapter` 恢复唯一已有 queued checkpoint。重复 resume 返回同一 receipt；receipt/ledger recovery 不会自动再次调用 adapter。
+
+P13.2 继续不写研究内容或 `ResearchState` 业务字段，不新增 Graph node/edge/router branch，也不改变 Usage。deadline/cancel 在 approval 或 resume 前均 terminalize 为 `expired/cancelled`；waiting 仍消耗 absolute run deadline。approval receipt、resume request 与 terminal result 绑定 action/request/authorization、approver、ledger attempt 与 checkpoint revision。adapter 是 runner-boundary contract，生产 integration 与 real workflow calibration 仍未 rollout。
 
 P10.1 observed before baseline：
 
@@ -160,23 +251,28 @@ P10.2 observed after baseline：
 - Trace 是 append-only observation，不拥有 Usage/routing；Usage 每个真实 LLM attempt 仅计一次；Evaluation 是 deterministic/read-only，除非单独批准不得成为生产 gate。
 - 不得从单个真实样本或 fake-only 结果推导生产策略；后续决策必须保留 observed/derived 区分和 archive 路径。
 
-## P0-P9 Milestone Map
+## Milestone Map
 
-| Milestone | 目的 | 核心改动 | 关键决策 |
-|---|---|---|---|
-| P0-P2 | 建立 V1 contracts 与安全研究原语 | 显式 State double-write、LLM/Search 基础、optional Evidence sidecar | 保留 legacy path 与 failure isolation。 |
-| P3 | 让 run 可操作、可观测 | lifecycle、checkpoint/resume/cache replay、Trace、read-only Evaluation | Runtime semantics 与 observation 不进入业务 routing。 |
-| P4.1-P4.5 | 集中 execution governance | persisted policy/lease、deadline/budget/retry、provider/LLM contracts、Writer profile、trace retention、snapshot binding | Runtime 拥有 global controls；provider/agent 不选 fallback 或跨 service retry。 |
-| P5.1 | 建立 offline quality baseline | 6 fixed cases、quality rubric、regression gate | quality evaluation 是 deterministic/read-only，不进生产 routing。 |
-| P5.2 | 离线衡量 Evidence value | disabled/enabled/partial fake benchmark | benchmark 不编码 selector/default policy。 |
-| P5.3 + closure | 观测真实 workload/SLO | manual DeepSeek/Tavily archive 与 observed/derived comparison | 不默认启用 Evidence；不启动 provider/Graph V2 项目。 |
-| P6 | 校准并重复 Evidence 测量 | reference fixtures、repeatability harness、two-round closure | Evidence selector、Writer optimization、provider resilience 均 insufficient/not assessable。 |
-| P7 | 试验 Writer section concurrency | bounded=2 scheduler、shared coordinator、deterministic assembly | 生产 Writer 保持 serial；无新 product/SLO 决策不继续扩展性能项目。 |
-| P8 | 建立最小 research memory | source-backed SQLite、lexical retrieval、bounded Planner/Searcher injection | 默认关闭；不引入 Memory Agent/vector DB。 |
-| P9 | 在既有 contract 内改善 planning quality | 6-case fake baseline、purpose labels、prompt/normalization | 不引入 replan、额外 LLM call、Graph change，也不宣称真实 provider 质量。 |
-| P10.1 | 建立 research coverage 测量基线 | 3-case fake baseline、plan/search/result/extracted/domain facet metrics、snapshot/fingerprint | measurement-only；暴露 extracted coverage failure；不实现 intervention。 |
-| P10.2 | 提高固定 extraction budget 下的 facet coverage | SearchExecutor extraction candidates by query round-robin；targeted ordering tests | 关闭 P10；不增加预算、不改生产默认控制流、不引入 replan/Graph V2。 |
-| P11.1 | 统一 quality-to-action advisory semantics | QualitySignal/ThresholdSpec/SignalProvenance/ActionRecommendation；P5/P9/P10/runtime adapters；deterministic decision matrix | Evaluation-only；不写 State、不改 Graph/router/Writer/runtime、不自动执行 action。 |
+| 阶段 | Milestone | 状态 | 目的 / 核心改动 | 关键决策 |
+|---|---|---|---|---|
+| Foundation & Runtime | P0-P2 | Closed | 建立 V1 contracts 与安全研究原语：显式 State double-write、LLM/Search 基础、optional Evidence sidecar | 保留 legacy path 与 failure isolation。 |
+| Foundation & Runtime | P3 | Closed | lifecycle、checkpoint/resume/cache replay、Trace、read-only Evaluation | Runtime semantics 与 observation 不进入业务 routing。 |
+| Foundation & Runtime | P4.1-P4.5 | Closed | persisted policy/lease、deadline/budget/retry、provider/LLM contracts、Writer profile、trace retention、snapshot binding | Runtime 拥有 global controls；provider/agent 不选 fallback 或跨 service retry。 |
+| Research Quality | P5.1 | Closed | 6 fixed cases、quality rubric、regression gate | quality evaluation 是 deterministic/read-only，不进生产 routing。 |
+| Research Quality | P5.2 | Closed | disabled/enabled/partial fake benchmark | benchmark 不编码 selector/default policy。 |
+| Research Quality | P5.3 + closure | Closed | manual DeepSeek/Tavily archive 与 observed/derived comparison | 不默认启用 Evidence；不启动 provider/Graph V2 项目。 |
+| Research Quality | P6 | Closed | reference fixtures、repeatability harness、two-round closure | Evidence selector、Writer optimization、provider resilience 均 insufficient/not assessable。 |
+| Research Quality | P7 | Closed | bounded=2 scheduler、shared coordinator、deterministic assembly | serial 保持默认；不继续扩展性能项目。 |
+| Research Quality | P8 | Closed | source-backed SQLite、lexical retrieval、bounded Planner/Searcher injection | default-off；不引入 Memory Agent/vector DB。 |
+| Research Quality | P9 | Closed | 6-case fake baseline、purpose labels、prompt/normalization | 不引入 replan、额外 LLM call、Graph change。 |
+| Research Quality | P10.1-P10.2 | Closed | coverage metrics 与 fixed-budget deterministic extraction ordering | 不增加预算、不引入 replan/Graph V2。 |
+| Governance Exploration | P11.1 | Frozen | QualitySignal/ThresholdSpec/SignalProvenance/ActionRecommendation；deterministic advisory matrix | Evaluation-only；不写 State、不自动执行 action。 |
+| Governance Exploration | P12.1 | Frozen | ActionAuthorization/Eligibility/Target/Budget/policies/provenance；validators 与 future transition rules | Contract-only；不接入自动 action。 |
+| Governance Exploration | P13.1-P13.2 | Frozen | ledger/CAS/recovery 与 default-off human-review handler/resume-adapter contract | 不做 production runner integration、enterprise approval 或 dispatch。 |
+| Capability Closure | P14 | **Next** | Light Reflection / Adaptive Research：Graph V1 内 bounded、可终止的适应性研究能力 | 不引入 Supervisor、Graph V2 或 arbitrary action execution。 |
+| Capability Closure | P15 | Planned | Memory Demo Activation：激活 P8 local lexical memory 及 provenance 边界 | 不做 semantic/vector memory。 |
+| Capability Closure | P16 | Planned | 3-5 个真实 research showcase tasks、可复现 evaluation/archive | 展示与学习，不形成 production gate。 |
+| Capability Closure | P17 | Planned | README、architecture、quick start、demo、cleanup、release notes | 完成后进入 **DONE**。 |
 
 ## Detailed History / Appendix
 
@@ -256,7 +352,10 @@ P10.2 observed after baseline：
 - P9：baseline 关闭；不引入 automatic replan/Reflection/Supervisor/Graph V2，也不形成生产策略。
 - P10.1：measurement-only baseline 关闭；fake-only observed extracted coverage failure 支持 P10.2 最小 intervention。
 - P10.2：coverage ordering 关闭；不继续扩大到 replan、Reflection、Supervisor、Graph V2、provider fallback、Evidence selector 或预算提高。
-- P11.1：advisory contract 关闭；已完成统一 signal/action 数据语义，但没有生产 action 权限。P11.2 仅在补齐真实 workload calibration、action authorization、bounded budget/termination、checkpoint/approval 和 merge contract 后评审。
+- P11.1：advisory contract 关闭；P12.1 已补齐 authorization/eligibility，P13.1 已补齐 generic execution control plane；三者均未获得业务 action execution permission。
+- P12.1：authorization/eligibility contract 关闭；P13.1 已提供 request/ledger/lease/idempotency/recovery control plane，但 action-specific handler、checkpoint pause/resume、actual State transition 与真实 workload evidence 仍需独立评审。
+- P13.1：generic action execution infrastructure 关闭；它不等于 executable action。首个具体 action 仍需独立 handler、State transition、checkpoint/recovery product protocol 与 calibration。
+- P13.2：checkpointed human-review handler 关闭为 fake-only/default-off baseline；它不等于 production approval workflow。仍需真实 runner adapter integration、approval UX/identity/audit retention、SLO、timeout/cancel recovery 演练与 real-workflow calibration。
 - measurement-contract governance 仍是 Evidence、provider、Reflection、Writer-default 等高风险改动前置条件；不得把 P5/P6/P7 observed 或 P8/P9 fake-only 数据直接转为生产 policy。
 
 ### G. P10.1 Research Coverage Measurement Closure
@@ -284,30 +383,54 @@ P10.2 observed after baseline：
 - decision matrix：all pass -> `continue/candidate`；extraction facet failure -> `retry_research/blocked`；planning failure -> `replan/blocked`；Runtime budget/deadline/cancel/failure -> `stop_fail/candidate`；unavailable/conflicting -> `human_review/blocked`；partial output -> `accept_partial/blocked`。
 - observed/derived/advisory：Runtime 字段是 observed control-plane facts；P5/P9/P10 metrics 是 derived evaluation observations；recommendation 永远 advisory，不获得生产执行权限。
 - targeted validation：`tests/test_quality_action.py tests/test_planning_quality.py tests/test_research_coverage.py tests/test_offline_evaluation.py` = `30 passed, 1 warning`；覆盖 deterministic repeatability、threshold boundary、unavailable vs failed、precedence、hard-stop priority、conflict、read-only State 和 no external calls。
-- P11.1 当前结论：contract implementation complete；不建议直接进入自动 Reflection/P11.2。下一阶段只有在真实 workload calibration、action policy authorization、bounded loop/budget/termination、checkpoint/approval 语义齐备后，才可重新评审 P11.2。
+- P11.1 当前结论：advisory contract implementation complete；不建议直接进入自动 Reflection。P12.1 与 P13.1 已补齐 eligibility 和 generic execution control plane；仍须在 action-specific handler、checkpoint pause/resume、State transition 与真实 workload calibration 齐备后，才可评审 executable action。
 
-## Graph V2 启动条件
+### J. P12.1 Action Authorization & Eligibility Contract Closure
 
-**Graph V2 不是默认下一步，也不是性能优化、增加模型或新增数据字段的前提。** 只有同时具备明确业务需求、成功指标和迁移方案时才可立项：
+- 新增 `src/evaluation/action_authorization.py` 与 `tests/test_action_authorization.py`；`src/evaluation/__init__.py` 仅导出纯 contract API，不接入生产 Graph 或 Runtime execution path。
+- contracts：`ActionAuthorization`、`ActionEligibilityDecision`、`ActionTarget`、`ActionBudget`、`ActionDeadlinePolicy`、`NoProgressPolicy`、`ActionFailurePolicy`、`ActionPartialPolicy`、`ActionProvenance`，并以 `StateTransitionRule` 表示未来 merge/replacement/downstream invalidation/attribution 要求。没有 execution ledger。
+- eligibility：valid P11 advisory + matching explicit authorization + complete targetable deficit + non-exhausted Runtime deadline/operation budget + bounded action budget/local deadline + readiness `ready` + validator preconditions 才能得到 `eligible`。任何 recommendation 仍是 advisory；Evaluation 无法成为 production gate。
+- runtime boundary：effective deadline 取 run remaining、authorization deadline、local action timeout 的最小值；action budget 只取 Runtime remaining 的更小值。operation retry 只重试相同 provider/tool operation，business `retry_research` 永远需要单独 authorization/target/budget。
+- future state rules：retry research 仅能 target-scoped append/dedupe 并 invalidate downstream derived outputs；replan 需要 replace plan 和 invalidate all plan-dependent outputs；accept partial 不 merge content，只声明 delivery semantics；human review 只产生 approval record。P12.1 不执行这些规则。
+- P12.1 validation：targeted `tests/test_action_authorization.py tests/test_quality_action.py` = `27 passed, 1 warning`；full fake-only pytest = `317 passed, 2 warnings`。覆盖 missing/mismatched authorization、provenance binding、incomplete target、runtime deadline/budget exhausted、budget narrowing、calibration insufficiency、retry boundary、replan invalidation、partial/approval preconditions、determinism、input immutability 和 no external calls。
+- P12 closure recommendation：可以关闭 **P12.1 contract sub-phase**，但不能关闭 P12 execution readiness。首个可能评审的 executable candidate 是 `human_review`，因为它可以先实现为 checkpointed approval wait/resume，不改变 research content；仍需 approval workflow、durable ledger、lease/at-least-once idempotency、timeout/cancel 和真实 workload evidence。
 
-1. Reflection loop：quality signal 决定 replan/re-search/rewrite，并定义最大轮数、收敛/终止、cost cap。
-2. Supervisor routing：系统在多个 next action 中选择，而不是沿现在线性 router 前进。
-3. Parallel research branches：并发子问题有 join/merge、shared budget、cancel propagation、可追溯 attribution。
-4. Human approval：checkpoint wait/resume 定义 permission、timeout、terminal semantics。
+### K. P13.1 Generic Action Execution Infrastructure Closure
 
-任何 proposal 必须定义 business scenario/SLO、State/message/branch-merge contract、runtime budget/retry/cancel/partial protocol、checkpoint/resume/lease impact、legacy migration/rollback、offline evaluation。任一缺失则保持 Graph V1。
+- 新增 `src/action_execution.py` 与 `tests/test_action_execution.py`。模块不导入或调用 Graph、Agent、provider、Writer 或 `ResearchState`；`ActionExecutor` 只有 protocol interface，没有 handler 或 dispatcher。
+- `ActionExecutionRequest` 绑定 `action_id/request_id/run_id/thread_id`、action target、authorization id、recommendation/authorization/state fingerprints、expected checkpoint revision、effective budget/deadline、idempotency key 与 created timestamp。request immutable；cache replay 使用新 run，不能复用 source action idempotency identity。
+- SQLite ledger 使用 action-id/idempotency-key uniqueness 与 revision CAS。lifecycle：`queued -> claimed -> executing|waiting_approval -> succeeded|rejected|no_progress|expired|failed|cancelled`；entry 保存 attempt、worker/lease owner、timestamps、input/output/state-transition fingerprints、error、recovery marker 和 claim-time constraints。
+- recovery：`claimed` crash 回到 `queued`，可由新 worker reclaim；`executing` crash 终结为 `failed/external_execution_uncommitted`，不自动重试外部 effect 或写 State。相同 terminal outcome 的 duplicate commit 返回同一 entry；不同 outcome 被拒绝。
+- Runtime bridge：control plane 接收 Runtime-owned current view 并在 claim/commit 重验 all bindings、checkpoint revision、deadline/budget/cancel/terminal facts；short lease 使用与 checkpoint runner 相同 path，waiting return 后 lease 已释放。P13.1 只记录 future state-transition fingerprint，不实施 merge/replacement/invalidation。
+- P13.1 validation：targeted `tests/test_action_execution.py tests/test_action_authorization.py tests/test_quality_action.py` = `43 passed, 1 warning`；full fake-only pytest = `333 passed, 2 warnings`。覆盖 duplicate request/claim/commit、lease conflict、stale checkpoint/authorization、deadline/cancel、before/after execution recovery、terminal suppression、waiting lease release、cache replay isolation、budget narrowing、deterministic recovery、trace attribution 和 no external calls。
+- P13.1 closure recommendation：可以关闭 generic control-plane sub-phase；**不**可关闭 P13 executable-action readiness。下一步候选仍是 checkpointed `human_review`，但须先独立实现 approval payload、pause/wait/resume adapter、terminal/timeout/cancel semantics、actual Runtime checkpoint integration 与真实 workflow calibration。
 
-## 最终 ResearchOS 演进方向
+### L. P13.2 Checkpointed Human Review Closure
 
-长期方向仍是 **Memory、Reflection、Supervisor、Evaluation、Multi-Agent collaboration**，但必须建立在现有 runtime、trace、provenance、evaluation、compatibility 边界上，不能绕过它们另加 Agent。
+- 新增 `src/human_review.py` 与 `tests/test_human_review.py`。handler 不导入或调用 Graph、Agent、provider、Writer 或 `ResearchState`；实际 checkpoint continuation 只能由 injected `CheckpointResumeAdapter` 在 runner boundary 执行。
+- lifecycle：eligible + authorization-bound `human_review` 明确进入 `queued -> claimed -> waiting_approval`，随后 lease 释放。approval receipt first-wins；approve 只进入 `pending` resume state，reject 将 action terminalize 为 `rejected`。没有自动 dispatch 或 automatic approval policy。
+- approval validation：提交时重验 action/request/authorization/run/thread/checkpoint/state binding、approver role、policy version、Runtime deadline/budget/cancel/terminal facts。相同 payload idempotent，冲突 payload 拒绝；expired/cancelled action 不接受新 approval。
+- resume/recovery：显式 `resume_approved` 才能 claim waiting action 并调用 adapter；duplicate resume suppressed。crash while waiting 保留 waiting；crash after approval before resume 保留 pending receipt；crash after resume result/ledger commit before receipt update 可收敛为 resumed；uncertain adapter execution 被标记 unknown，禁止自动重放。
+- P13.2 validation：targeted `tests/test_human_review.py tests/test_action_execution.py tests/test_action_authorization.py tests/test_quality_action.py` = `53 passed, 1 warning`；full fake-only pytest = `343 passed, 2 warnings`。覆盖 approve/reject、identical/conflicting approval、stale authorization/checkpoint、deadline/cancel、waiting/approval recovery、duplicate resume、lease conflict/loss、terminal reopen suppression、role/scope、approved-before-resume no external call。
+- P13.2 closure recommendation：可以关闭 fake-only/default-off handler sub-phase；**不**可关闭 P13 production action readiness。继续保持 Graph V1，不实现 `retry_research`、replan、Reflection、Supervisor、Graph V2 或 provider fallback。生产前仍需真实 runner integration、authenticated approver identity/role source、audit retention/privacy、approval SLO、timeout/cancel/lease failure drill、at-least-once recovery 与 real-workflow calibration。
 
-- Memory：P8 已覆盖最小 provenance/storage/retrieval/retention 与 bounded Planner/Searcher injection；personalized/semantic memory 是独立未来工作。
-- Reflection：必须消费已验证的 Evaluation signals，并保持 bounded、可终止、可计费。
-- Supervisor：必须用结构化 decision contract；自然语言 prompt 不替代 router、budget、authorization policy。
-- Multi-Agent：必须先定义独立 branches 和 merge/data/runtime contracts；并发不是默认。
-- Evaluation：保持 read-only；生产 governance、automatic gates、approval flow 必须单独评审。
+## Optional Future / Productionization
 
-## Backlog
+以下内容不是 P14-P17 backlog，也不是项目收尾条件。它们只在未来出现明确的 Agent/showcase 需求，或有人选择把项目独立 productize 时重新评审：
+
+| 方向 | 定位 | 重新立项的最低条件 |
+|---|---|---|
+| Graph V2 | Optional Future | Graph V1 无法承载一个明确、可验证的 Agent capability；先定义 State/merge、预算、终止和迁移方案。 |
+| Supervisor | Optional Future | 多个真实 next-action 路径需要结构化选择；不以自然语言 prompt 替代 router。 |
+| Parallel multi-agent branch/join | Optional Future | 有独立子问题、join/merge、shared budget 与 attribution 的明确展示需求。 |
+| Provider fallback / circuit breaker | Optional Productionization | 真实多 provider 需求与维护意愿出现；当前单 provider 研究系统不需要。 |
+| Production human approval | Optional Productionization | 真实 runner integration、认证身份、审批 UX、audit/privacy、timeout/recovery 和运维责任被独立接受。 |
+| Enterprise action execution platform | Optional Productionization | 有实际业务 action 与长期维护主体；当前 P11-P13 不构成承诺。 |
+| Semantic/vector memory | Optional Future | P15 的 lexical memory showcase 已证明不足，且有清晰的检索/隐私目标。 |
+
+**Graph V1 默认继续。** Reflection、Supervisor、branch/join 或 human approval 都不是 Graph V2 的自动触发器。任何 Graph V2 proposal 都必须先说明它服务的具体 Agent capability、最小成功证据、State/merge 约束、Runtime deadline/budget/cancel impact 与回退方案；否则保持当前线性主链。
+
+## Maintenance Notes
 
 - Pydantic/msgpack Async SQLite serialization warnings 与跨版本 checkpoint 策略。
 - router early termination 后 callback/UI 一致性。
