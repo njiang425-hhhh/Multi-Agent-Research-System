@@ -18,9 +18,12 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from src.state import ResearchState
 from src.state_compat import (
+    canonical_documents,
+    canonical_findings,
     canonical_plan,
     canonical_report_text,
     hydrate_canonical_state,
+    legacy_projection_patch,
 )
 from src.runtime_lifecycle import (
     adopt_terminal_lifecycle_patch,
@@ -145,20 +148,24 @@ def create_research_graph(checkpointer=None):
     # Agents return canonical business patches. This boundary explicitly adds
     # legacy projections for historical checkpoints, UI, and callers.
     async def plan_node(state: ResearchState) -> Dict[str, Any]:
-        canonical_state = hydrate_canonical_state(state, include_semantic_projections=False)
-        return await trace_node_execution(canonical_state, node="plan", agent="ResearchPlanner", operation="plan", execute=planner.plan)
+        canonical_state = hydrate_canonical_state(state)
+        patch = await trace_node_execution(canonical_state, node="plan", agent="ResearchPlanner", operation="plan", execute=planner.plan)
+        return legacy_projection_patch(canonical_state, patch)
 
     async def search_node(state: ResearchState) -> Dict[str, Any]:
-        canonical_state = hydrate_canonical_state(state, include_semantic_projections=False)
-        return await trace_node_execution(canonical_state, node="search", agent="ResearchSearcher", operation="search", execute=searcher.search)
+        canonical_state = hydrate_canonical_state(state)
+        patch = await trace_node_execution(canonical_state, node="search", agent="ResearchSearcher", operation="search", execute=searcher.search)
+        return legacy_projection_patch(canonical_state, patch)
 
     async def synthesize_node(state: ResearchState) -> Dict[str, Any]:
-        canonical_state = hydrate_canonical_state(state, include_semantic_projections=False)
-        return await trace_node_execution(canonical_state, node="synthesize", agent="ResearchSynthesizer", operation="synthesize", execute=synthesizer.synthesize)
+        canonical_state = hydrate_canonical_state(state)
+        patch = await trace_node_execution(canonical_state, node="synthesize", agent="ResearchSynthesizer", operation="synthesize", execute=synthesizer.synthesize)
+        return legacy_projection_patch(canonical_state, patch)
 
     async def writer_node(state: ResearchState) -> Dict[str, Any]:
-        canonical_state = hydrate_canonical_state(state, include_semantic_projections=False)
-        return await trace_node_execution(canonical_state, node="write_report", agent="ReportWriter", operation="write_report", execute=writer.write_report)
+        canonical_state = hydrate_canonical_state(state)
+        patch = await trace_node_execution(canonical_state, node="write_report", agent="ReportWriter", operation="write_report", execute=writer.write_report)
+        return legacy_projection_patch(canonical_state, patch)
 
     workflow.add_node("plan", plan_node)
     workflow.add_node("search", search_node)
@@ -187,15 +194,16 @@ def create_research_graph(checkpointer=None):
             logger.error(f"搜索失败：{state.error}")
             return END
         
-        if not state.search_results:
+        documents = canonical_documents(state)
+        if not documents:
             logger.warning("未找到搜索结果")
             return END
         
-        if len(state.search_results) < 2:
-            logger.warning(f"搜索结果不足：{len(state.search_results)}")
+        if len(documents) < 2:
+            logger.warning(f"搜索结果不足：{len(documents)}")
             return END
             
-        logger.info(f"搜索验证通过：{len(state.search_results)} 个结果")
+        logger.info(f"搜索验证通过：{len(documents)} 个 canonical Documents")
         return "synthesize"
     
     def should_continue_after_synthesize(state: ResearchState) -> str:
@@ -204,11 +212,18 @@ def create_research_graph(checkpointer=None):
             logger.error(f"综合失败：{state.error}")
             return END
         
-        if not state.key_findings:
+        documents = canonical_documents(state)
+        document_ids = {document.document_id for document in documents}
+        findings = [
+            finding
+            for finding in canonical_findings(state)
+            if any(source_id in document_ids for source_id in finding.source_document_ids)
+        ]
+        if not findings:
             logger.warning("未提取到关键发现")
             return END
         
-        logger.info(f"综合验证通过：{len(state.key_findings)} 条发现")
+        logger.info(f"综合验证通过：{len(findings)} 条 source-linked 发现")
         return "write_report"
     
     def should_continue_after_report(state: ResearchState) -> str:
@@ -373,8 +388,8 @@ async def run_research(
     
     if verbose:
         logger.info("流程已完成")
-        if final_state.get("final_report"):
-            logger.info(f"报告已生成：{len(final_state['final_report'])} 个字符")
+        if report_text := canonical_report_text(final_state):
+            logger.info(f"报告已生成：{len(report_text)} 个字符")
     
     return final_state
 
@@ -447,8 +462,8 @@ async def run_research_with_persistence(
     
     if verbose:
         logger.info("流程已完成")
-        if final_state.get("final_report"):
-            logger.info(f"报告已生成：{len(final_state['final_report'])} 个字符")
+        if report_text := canonical_report_text(final_state):
+            logger.info(f"报告已生成：{len(report_text)} 个字符")
     
     return final_state
 

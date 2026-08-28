@@ -39,9 +39,8 @@ Completed in this phase:
 - Added `src/state_compat.py`: explicit canonical-first hydration and fallback
   for `query`, `research_plan`, `iteration`, `usage`, and report presentation.
   It never uses Pydantic validators or mutates caller/checkpoint payloads.
-- Graph nodes hydrate only the non-semantic core fields before Agent execution;
-  this keeps legacy-only checkpoint/resume input working without altering
-  `search_results` / `documents` or `key_findings` / `findings` behavior.
+- Graph nodes hydrate canonical fields through the explicit boundary before
+  Agent execution.
 - Graph plan routing, runtime terminal/cache checks, CLI, Web display, and the
   read-only evaluator now prefer canonical plan, report, iteration, and usage
   data with legacy fallback.
@@ -58,6 +57,32 @@ Completed in this phase:
 8. `src/agents/writer.py`
 9. `src/search/executor.py`
 
+## Phase 2B — Canonical Research Data Flow Migration
+
+Completed in this phase:
+
+- The Agent main path is now `query → research_plan → documents → findings → report`.
+- Searcher returns canonical, credibility-stable, URL-unique Documents. A later
+  duplicate may fill missing content but never replaces the first item's title,
+  URI, snippet, or credibility record.
+- Synthesizer receives Documents only and emits Findings with
+  `source_document_ids`; invalid source numbers are discarded and no confidence
+  is invented.
+- Writer receives only plan, Documents, and source-linked Findings. Document
+  order defines citation numbers; invalid `[n]` markers are removed;
+  `Report.citations[n-1]` is the bibliography target, and section sources only
+  include actually used valid URLs.
+- Evidence sidecar is optional enrichment. It writes document analyses,
+  evidence, and diagnostics but cannot replace core Findings or alter Writer
+  inputs.
+- `legacy_projection_patch` is the one Graph output boundary for
+  `documents → search_results/credibility_scores`, `findings → key_findings`,
+  and `report → report_sections/final_report`. Agent class bodies no longer
+  double-write these semantic fields.
+- CLI, Web summary, Graph completion logging, and Evaluation use canonical
+  Documents, Findings, and Report first. Cache/replay and checkpoint hydration
+  retain legacy fallback through `state_compat`.
+
 ## Compatibility boundary
 
 ```text
@@ -65,31 +90,28 @@ legacy State / cache / checkpoint
           │
           ▼
 src.state_compat.hydrate_canonical_state
-          │  canonical-first: query, research_plan, iteration, usage
+          │  canonical-first: query, research_plan, documents, findings, report, iteration, usage
           ▼
-Graph V1 and four Agent modules
+Graph V1 and four Agent modules (canonical inputs/outputs)
           │
           ▼
-canonical-first CLI / Web / Runtime / Evaluation presentation
+legacy projection at Graph output → canonical-first CLI / Web / Runtime / Evaluation
 ```
 
 Legacy fields remain in `ResearchState`. They are not silently synchronized;
 the adapter returns a copy and canonical values win on explicit conflicts.
 
-## Explicit Phase 2B boundary
+## Remaining Phase 2B follow-up / Phase 2C boundary
 
 Do not merge these into Phase 2A:
 
 1. Remove legacy State fields or change `research_topic` requiredness.
-2. Make `Documents` the Writer source list. Documents currently de-duplicate
-   URLs while `search_results` preserves order for citation numbering.
-3. Make `Findings` the Writer input. Evidence sidecar may replace `findings`,
-   while current Writer intentionally consumes `key_findings`.
-4. Change Writer citation numbering, source order, or optional Evidence
-   semantics.
-5. Merge/remove runtime lifecycle, cache, checkpoint, resume, or lease code.
-6. Refactor Evaluation, Memory, or governance beyond canonical-first reading.
-7. Add Graph V2, Supervisor, Critic, Reflection, Replanner, or new Agents.
+2. Delete legacy State fields or remove legacy cache/checkpoint read support.
+3. Add claim-level Evidence confidence merging; Evidence currently remains
+   optional diagnostics by design.
+4. Merge/remove runtime lifecycle, cache, checkpoint, resume, or lease code.
+5. Refactor Evaluation, Memory, or governance beyond canonical-first reading.
+6. Add Graph V2, Supervisor, Critic, Reflection, Replanner, or new Agents.
 
 ## Validation
 

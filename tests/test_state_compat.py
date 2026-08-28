@@ -1,12 +1,13 @@
 """Regression coverage for the explicit canonical/legacy State boundary."""
 
-from src.state import ResearchPlan, ResearchState, SearchQuery, UsageMetrics
+from src.state import Document, Finding, Report, ReportSection, ResearchPlan, ResearchState, SearchQuery, UsageMetrics
 from src.state_compat import (
     canonical_iteration,
     canonical_plan,
     canonical_query,
     canonical_usage,
     hydrate_canonical_state,
+    legacy_projection_patch,
 )
 
 
@@ -68,3 +69,18 @@ def test_hydration_prefers_explicit_canonical_values_on_conflict() -> None:
     assert canonical_usage(hydrated).llm_calls == 9
     assert canonical_usage(hydrated).input_tokens == 90
     assert canonical_usage(hydrated).output_tokens == 30
+
+
+def test_legacy_projection_is_explicit_and_uses_canonical_order() -> None:
+    state = ResearchState(research_topic="topic", query="topic")
+    documents = [Document(document_id="doc-1", title="Source", uri="https://example.com/source", snippet="snippet", credibility={"score": 90})]
+    findings = [Finding(finding_id="finding-1", statement="Claim", source_document_ids=["doc-1"])]
+    report = Report(title="topic", sections=[ReportSection(title="Summary", content="Report", sources=["https://example.com/source"])], content="Report", citations=["https://example.com/source"], status="completed")
+
+    patch = legacy_projection_patch(state, {"documents": documents, "findings": findings, "report": report})
+
+    assert patch["search_results"][0].url == "https://example.com/source"
+    assert patch["credibility_scores"] == [{"score": 90}]
+    assert patch["key_findings"] == ["Claim"]
+    assert patch["report_sections"] == report.sections
+    assert patch["final_report"] == "Report"

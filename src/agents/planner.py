@@ -132,7 +132,6 @@ class ResearchPlanner:
         logger.info(f"报告大纲包含 {len(plan.report_outline)} 个章节（上限：{config.max_report_sections}）")
         await emit_planning_complete(len(plan.search_queries), len(plan.report_outline))
         patch: Dict[str, Any] = {
-            "plan": plan,
             "research_plan": plan,
             "retrieved_memory": retrieved_memory,
             "memory_ids": [item.memory_id for item in retrieved_memory],

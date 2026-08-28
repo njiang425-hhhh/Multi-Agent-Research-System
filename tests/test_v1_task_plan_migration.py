@@ -12,6 +12,7 @@ from src.graph import _create_initial_state
 from src.search.config import SearchConfig
 from src.search.models import SearchExecutionResult, SearchExecutionStats
 from src.state import ResearchPlan, ResearchState, SearchQuery, SearchResult
+from src.state_compat import hydrate_canonical_state, legacy_projection_patch
 
 
 def _plan(query: str) -> ResearchPlan:
@@ -30,7 +31,7 @@ def test_graph_entry_explicitly_double_writes_task_fields() -> None:
     assert state.query == "canonical research task"
 
 
-def test_planner_uses_v1_query_and_explicitly_double_writes_plan() -> None:
+def test_planner_uses_canonical_query_and_returns_canonical_plan() -> None:
     observed_prompts: list[str] = []
 
     def fake_llm(prompt: object) -> str:
@@ -49,8 +50,8 @@ def test_planner_uses_v1_query_and_explicitly_double_writes_plan() -> None:
 
     assert "canonical research task" in observed_prompts[0]
     assert "legacy task" not in observed_prompts[0]
-    assert patch["plan"] == patch["research_plan"]
-    assert patch["plan"].search_queries[0].query == "canonical research task"
+    assert "plan" not in patch
+    assert patch["research_plan"].search_queries[0].query == "canonical research task"
     assert patch["iteration"] == state.iteration + 1
 
 
@@ -110,7 +111,8 @@ def test_searcher_prefers_v1_plan_without_mutating_legacy_plan() -> None:
     assert executor.queries == v1_plan.search_queries
     assert v1_plan.search_queries[0].completed is True
     assert legacy_plan.search_queries[0].completed is False
-    assert patch["search_results"][0].query == "canonical query"
+    assert "search_results" not in patch
+    assert patch["documents"][0].metadata["search_query"] == "canonical query"
     assert patch["iteration"] == state.iteration + 1
 
 
@@ -120,10 +122,10 @@ class _FakeSynthesisAgent:
 
     async def ainvoke(self, input_value: dict) -> dict:
         self.input = input_value
-        return {"messages": [type("Message", (), {"content": '["A canonical finding"]'})()]}
+        return {"messages": [type("Message", (), {"content": '[{"claim": "A canonical finding", "source_numbers": [1]}]'})()]}
 
 
-def test_synthesizer_uses_v1_query_for_its_existing_legacy_outputs(monkeypatch) -> None:
+def test_synthesizer_uses_canonical_query_and_hydrated_documents(monkeypatch) -> None:
     fake_agent = _FakeSynthesisAgent()
     monkeypatch.setattr(agents_module, "create_agent", lambda *_args, **_kwargs: fake_agent)
     state = ResearchState(
@@ -148,11 +150,11 @@ def test_synthesizer_uses_v1_query_for_its_existing_legacy_outputs(monkeypatch) 
             llm=object(),
             max_retries=1,
             evidence_config=EvidenceRuntimeConfig(enabled=False),
-        ).synthesize(state)
+        ).synthesize(hydrate_canonical_state(state))
     )
 
     message = fake_agent.input["messages"][0]["content"]
     assert "canonical research task" in message
     assert "legacy task" not in message
-    assert patch["key_findings"] == ["A canonical finding"]
+    assert patch["findings"][0].statement == "A canonical finding"
     assert patch["iteration"] == state.iteration + 1

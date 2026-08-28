@@ -1,4 +1,4 @@
-"""Writer node for the legacy-stable source and finding sequence."""
+"""Writer node for the canonical Documents → Findings → Report flow."""
 
 from __future__ import annotations
 
@@ -27,8 +27,15 @@ from src.llm.factory import get_llm
 from src.llm_execution import execute_llm_operation
 from src.prompts import WRITER_SYSTEM_PROMPT, WRITER_USER_TEMPLATE
 from src.runtime_lifecycle import completed_lifecycle_patch, failed_lifecycle_patch
-from src.state import Report, ReportSection, ResearchState, SearchResult
-from src.state_compat import canonical_iteration, canonical_plan as _research_plan, canonical_query as _research_query, canonical_usage
+from src.state import Document, Finding, Report, ReportSection, ResearchState
+from src.state_compat import (
+    canonical_documents,
+    canonical_findings,
+    canonical_iteration,
+    canonical_plan as _research_plan,
+    canonical_query as _research_query,
+    canonical_usage,
+)
 from src.utils.citations import CitationFormatter
 from src.utils.tools import get_research_tools
 
@@ -36,42 +43,37 @@ from src.utils.tools import get_research_tools
 logger = logging.getLogger(__name__)
 
 
-def _report_citations(
-    search_results: List[SearchResult],
-    report_sections: List[ReportSection],
-) -> List[str]:
-    """Project report sources into an ordered, stable, de-duplicated URL list."""
-    citations: List[str] = []
-    seen_urls = set()
+def _citeable_documents(documents: List[Document]) -> List[Document]:
+    """Keep the canonical order while defensively excluding invalid sources."""
 
-    for result in search_results:
-        url = getattr(result, "url", "")
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            citations.append(url)
+    cited: List[Document] = []
+    seen_ids: set[str] = set()
+    seen_uris: set[str] = set()
+    for document in documents:
+        if (
+            not document.document_id
+            or document.document_id in seen_ids
+            or document.uri in seen_uris
+            or document.source_type != "web"
+            or document.status == "invalid_source"
+            or not document.uri.startswith(("http://", "https://"))
+        ):
+            continue
+        seen_ids.add(document.document_id)
+        seen_uris.add(document.uri)
+        cited.append(document)
+    return cited
 
-    for section in report_sections:
-        for url in getattr(section, "sources", []) or []:
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                citations.append(url)
 
-    return citations
+def _writer_ready_findings(findings: List[Finding], documents: List[Document]) -> List[Finding]:
+    """Retain only claims with at least one source in the writer bibliography."""
 
-
-def _legacy_report_to_v1(
-    state: ResearchState,
-    report_sections: List[ReportSection],
-    final_report: str,
-) -> Report:
-    """Explicitly project successful legacy Writer output into the V1 contract."""
-    return Report(
-        title=state.research_topic,
-        sections=list(report_sections),
-        content=final_report,
-        citations=_report_citations(state.search_results, report_sections),
-        status="completed",
-    )
+    document_ids = {document.document_id for document in documents}
+    return [
+        finding
+        for finding in findings
+        if finding.statement and any(source_id in document_ids for source_id in finding.source_document_ids)
+    ]
 
 
 @dataclass(slots=True)
@@ -108,18 +110,21 @@ class ReportWriter:
         """
         logger.info("正在撰写最终报告")
 
-        if not state.plan or not state.key_findings:
+        plan = _research_plan(state)
+        documents = _citeable_documents(canonical_documents(state))[:15]
+        findings = _writer_ready_findings(canonical_findings(state), documents)
+        if not plan or not documents or not findings:
             await emit_error("报告生成所需的数据不足")
             return {"error": "报告生成所需的数据不足", **failed_lifecycle_patch()}
 
-        await emit_writing_start(len(state.plan.report_outline))
+        await emit_writing_start(len(plan.report_outline))
 
         report_sections: list[ReportSection] = []
         report_call_details: list[dict[str, Any]] = []
         current_context = state.execution_context
 
         try:
-            batch = await self._write_sections(state)
+            batch = await self._write_sections(state, documents, findings)
             report_sections = batch.sections
             report_call_details = batch.call_details
             current_context = batch.execution_context
@@ -127,26 +132,14 @@ class ReportWriter:
             if not report_sections:
                 raise ReportGenerationError("未生成报告章节")
 
-            temp_state = ResearchState(
-                research_topic=state.research_topic,
-                plan=state.plan,
-                report_sections=report_sections,
-                search_results=state.search_results,
-            )
-            final_report = self._compile_report(temp_state)
-            if state.search_results:
-                final_report = self.citation_formatter.update_report_citations(
-                    final_report,
-                    style=self.citation_style,
-                    search_results=state.search_results,
-                )
-            if state.credibility_scores:
-                high_cred_sources = [
-                    i + 1 for i, score in enumerate(state.credibility_scores)
-                    if score.get("level") == "high"
-                ]
-                if high_cred_sources:
-                    final_report += f"\n\n---\n\n**注：** 本次研究优先采用了 {len(high_cred_sources)} 个高可信度来源。"
+            final_report = self._compile_report(_research_query(state), plan, report_sections, documents)
+            high_cred_sources = [
+                index + 1
+                for index, document in enumerate(documents)
+                if (document.credibility or {}).get("level") == "high"
+            ]
+            if high_cred_sources:
+                final_report += f"\n\n---\n\n**注：** 本次研究优先采用了 {len(high_cred_sources)} 个高可信度来源。"
             if len(final_report) < 500:
                 raise ReportGenerationError("报告过短，内容不足")
         except Exception as error:
@@ -163,47 +156,63 @@ class ReportWriter:
         calls, input_tokens, output_tokens = _llm_patch_totals(state, report_call_details)
         logger.info(f"报告生成完成：{len(final_report)} 个字符")
         await emit_writing_complete(len(final_report))
-        report = _legacy_report_to_v1(state, report_sections, final_report)
+        report = Report(
+            title=_research_query(state),
+            sections=report_sections,
+            content=final_report,
+            citations=[document.uri for document in documents],
+            status="completed",
+        )
         patch: Dict[str, Any] = {
-            "report_sections": report_sections,
-            "final_report": final_report,
             "report": report,
             **completed_lifecycle_patch(),
-            "iterations": state.iterations + 1,
-            "iteration": state.iteration + 1,
-            "llm_calls": state.llm_calls + calls,
-            "total_input_tokens": state.total_input_tokens + input_tokens,
-            "total_output_tokens": state.total_output_tokens + output_tokens,
+            "iterations": canonical_iteration(state) + 1,
+            "iteration": canonical_iteration(state) + 1,
+            "llm_calls": canonical_usage(state).llm_calls + calls,
+            "total_input_tokens": canonical_usage(state).input_tokens + input_tokens,
+            "total_output_tokens": canonical_usage(state).output_tokens + output_tokens,
             "llm_call_details": state.llm_call_details + report_call_details,
             "usage": _usage_from_legacy_totals(
                 state,
-                llm_calls=state.llm_calls + calls,
-                total_input_tokens=state.total_input_tokens + input_tokens,
-                total_output_tokens=state.total_output_tokens + output_tokens,
+                llm_calls=canonical_usage(state).llm_calls + calls,
+                total_input_tokens=canonical_usage(state).input_tokens + input_tokens,
+                total_output_tokens=canonical_usage(state).output_tokens + output_tokens,
             ),
         }
         if current_context is not None:
             patch["execution_context"] = current_context
         return patch
 
-    async def _write_sections(self, state: ResearchState) -> _WriterSectionBatch:
+    async def _write_sections(
+        self,
+        state: ResearchState,
+        documents: List[Document],
+        findings: List[Finding],
+    ) -> _WriterSectionBatch:
         if self.section_execution_mode == "bounded" and self.section_concurrency > 1:
-            return await self._write_sections_bounded(state)
-        return await self._write_sections_serial(state)
+            return await self._write_sections_bounded(state, documents, findings)
+        return await self._write_sections_serial(state, documents, findings)
 
-    async def _write_sections_serial(self, state: ResearchState) -> _WriterSectionBatch:
+    async def _write_sections_serial(
+        self,
+        state: ResearchState,
+        documents: List[Document],
+        findings: List[Finding],
+    ) -> _WriterSectionBatch:
         report_sections: list[ReportSection] = []
         report_call_details: list[dict[str, Any]] = []
         current_context = state.execution_context
-        total_sections = len(state.plan.report_outline) if state.plan else 0
+        total_sections = len(_research_plan(state).report_outline) if _research_plan(state) else 0
 
         try:
-            for section_idx, section_title in enumerate(state.plan.report_outline, 1):
+            for section_idx, section_title in enumerate(_research_plan(state).report_outline, 1):
                 await emit_writing_section(section_title, section_idx, total_sections)
                 section, section_details, current_context = await self._write_section_result(
                     state,
                     section_idx - 1,
                     section_title,
+                    documents,
+                    findings,
                     current_context,
                 )
                 if section:
@@ -222,8 +231,13 @@ class ReportWriter:
             execution_context=current_context,
         )
 
-    async def _write_sections_bounded(self, state: ResearchState) -> _WriterSectionBatch:
-        outline = list(state.plan.report_outline) if state.plan else []
+    async def _write_sections_bounded(
+        self,
+        state: ResearchState,
+        documents: List[Document],
+        findings: List[Finding],
+    ) -> _WriterSectionBatch:
+        outline = list(_research_plan(state).report_outline) if _research_plan(state) else []
         total_sections = len(outline)
         coordinator = ExecutionContextCoordinator(state.execution_context)
         results: list[tuple[ReportSection | None, list[dict[str, Any]]] | None] = [
@@ -250,6 +264,8 @@ class ReportWriter:
                         state,
                         index,
                         section_title,
+                        documents,
+                        findings,
                         coordinator,
                     )
                     results[index] = (section, section_details)
@@ -311,16 +327,18 @@ class ReportWriter:
         state: ResearchState,
         section_index: int,
         section_title: str,
+        documents: List[Document],
+        findings: List[Finding],
         execution_context=None,
     ) -> tuple[ReportSection | None, list[dict[str, Any]], Any]:
         section_kwargs: dict[str, Any] = {}
         if execution_context is not None:
             section_kwargs["execution_context"] = execution_context
         written = await self._write_section(
-            state.research_topic,
+            _research_query(state),
             section_title,
-            state.key_findings,
-            state.search_results,
+            findings,
+            documents,
             **section_kwargs,
         )
         # Existing tests and external injection seams return the old two-tuple.
@@ -355,8 +373,8 @@ class ReportWriter:
         self,
         topic: str,
         section_title: str,
-        findings: List[str],
-        search_results: List,
+        findings: List[Finding],
+        documents: List[Document],
         execution_context=None,
     ) -> tuple:
         """Write one section; runtime owns retries, budget, and deadline."""
@@ -370,16 +388,25 @@ class ReportWriter:
         ])
 
         sources_context = ""
-        if search_results:
+        if documents:
             sources_context = "\n可用于引用的来源：\n" + "\n".join(
-                f"[{i+1}] {r.title} ({r.url})"
-                for i, r in enumerate(search_results[:15])
+                f"[{i+1}] {document.title} ({document.uri})"
+                for i, document in enumerate(documents)
             )
         input_message = WRITER_USER_TEMPLATE.format(
             topic=topic,
             section_title=section_title,
             min_words=config.min_section_words,
-            findings=chr(10).join(f"- {f}" for f in findings),
+            findings=chr(10).join(
+                f"- {finding.statement}（建议来源："
+                + ", ".join(
+                    f"[{index + 1}]"
+                    for index, document in enumerate(documents)
+                    if document.document_id in finding.source_document_ids
+                )
+                + "）"
+                for finding in findings
+            ),
             sources_context=sources_context,
         )
         chain = prompt | self.llm | StrOutputParser()
@@ -398,18 +425,23 @@ class ReportWriter:
             logger.warning(f"章节“{section_title}”生成的内容不足：{len(content)} 个字符")
             if findings:
                 logger.info(f"正在为章节“{section_title}”创建备用内容")
-                content = f"\n\n{chr(10).join(findings[:3])}\n\n"
+                content = f"\n\n{chr(10).join(finding.statement for finding in findings[:3])}\n\n"
             else:
                 logger.error(f"无法创建章节“{section_title}”：没有内容和研究发现")
                 return None, execution.call_details, execution.context
 
+        def keep_valid_citation(match: re.Match[str]) -> str:
+            number = int(match.group(1))
+            return match.group(0) if 1 <= number <= len(documents) else ""
+
+        content = re.sub(r'\[(\d+)\]', keep_valid_citation, content)
         citations = re.findall(r'\[(\d+)\]', content)
         source_urls = []
         seen_source_urls = set()
         for cite_num in citations:
             idx = int(cite_num) - 1
-            if 0 <= idx < len(search_results):
-                url = search_results[idx].url
+            if 0 <= idx < len(documents):
+                url = documents[idx].uri
                 if url and url not in seen_source_urls:
                     seen_source_urls.add(url)
                     source_urls.append(url)
@@ -421,34 +453,28 @@ class ReportWriter:
         logger.info(f"章节“{section_title}”撰写成功：{len(content)} 个字符")
         return section, execution.call_details, execution.context
 
-    def _compile_report(self, state: ResearchState) -> str:
-        """将所有章节汇编为最终报告。"""
-        search_results = getattr(state, 'search_results', []) or []
-        report_sections = getattr(state, 'report_sections', []) or []
-
-        unique_sources = set()
-        for result in search_results:
-            if hasattr(result, 'url') and result.url:
-                unique_sources.add(result.url)
-
-        for section in report_sections:
-            if hasattr(section, 'sources'):
-                unique_sources.update(section.sources)
-
-        source_count = len(unique_sources) if unique_sources else len(search_results)
+    def _compile_report(
+        self,
+        topic: str,
+        plan,
+        report_sections: List[ReportSection],
+        documents: List[Document],
+    ) -> str:
+        """Compile sections against the one canonical bibliography order."""
+        source_count = len(documents)
 
         report_parts = [
-            f"# {state.research_topic}\n",
+            f"# {topic}\n",
             f"**深度研究报告**\n",
             f"\n## 执行摘要\n",
-            f"本报告对 {state.research_topic} 进行了全面分析。",
+            f"本报告对 {topic} 进行了全面分析。",
             f"本次研究覆盖 **{source_count} 个来源**，",
             f"并综合为 **{len(report_sections)} 个主要章节**。\n",
             f"\n## 研究目标\n"
         ]
 
-        if state.plan and hasattr(state.plan, 'objectives'):
-            for i, obj in enumerate(state.plan.objectives, 1):
+        if plan and hasattr(plan, 'objectives'):
+            for i, obj in enumerate(plan.objectives, 1):
                 report_parts.append(f"{i}. {obj}\n")
 
         report_parts.append("\n---\n")
@@ -470,28 +496,25 @@ class ReportWriter:
         if not has_references_section:
             report_parts.append("\n---\n\n## 参考文献\n\n")
 
-        source_info = []
-        seen_urls = set()
-
-        for result in search_results:
-            if hasattr(result, 'url') and result.url and result.url not in seen_urls:
-                seen_urls.add(result.url)
-                title = getattr(result, 'title', '')
-                source_info.append((result.url, title))
-
-        for section in report_sections:
-            if hasattr(section, 'sources'):
-                for url in section.sources:
-                    if url not in seen_urls:
-                        seen_urls.add(url)
-                        source_info.append((url, ''))
-
         if not has_references_section:
-            if source_info:
-                for i, (url, title) in enumerate(source_info[:30], 1):
-                    citation = self.citation_formatter.format_apa(url, title)
+            if documents:
+                for i, document in enumerate(documents, 1):
+                    citation = self._format_citation(document)
                     report_parts.append(f"{i}. {citation}\n")
             else:
                 report_parts.append("*本次研究没有可用来源。*\n")
 
         return "".join(report_parts)
+
+    def _format_citation(self, document: Document) -> str:
+        style = self.citation_style.lower()
+        if style == "mla":
+            return self.citation_formatter.format_mla(document.uri, document.title)
+        if style == "chicago":
+            return self.citation_formatter.format_chicago(document.uri, document.title)
+        if style == "ieee":
+            return self.citation_formatter.format_ieee(document.uri, document.title)
+        return self.citation_formatter.format_apa(document.uri, document.title)
+
+
+__all__ = ["ReportWriter"]

@@ -147,9 +147,9 @@ def _coverage_summary(state: Any, completed: bool) -> tuple[CoverageEvaluationSu
 def _report_summary(state: Any, completed: bool) -> tuple[ReportEvaluationSummary, EvaluationMetric]:
     report = _read(state, "report", _MISSING)
     final_report = canonical_report_text(state)
-    sections = _list(state, "report_sections")
-    if sections is None and report is not _MISSING:
-        sections = _list(report, "sections")
+    sections = _list(report, "sections") if report is not _MISSING else None
+    if sections is None:
+        sections = _list(state, "report_sections")
     if final_report is None:
         return ReportEvaluationSummary(), _metric(
             "report_structure", "unavailable", reason="report fields are absent from this result"
@@ -183,9 +183,9 @@ def _source_urls(values: list[Any] | tuple[Any, ...] | None) -> set[str]:
 
 
 def _report_cited_urls(state: Any, report: Any, final_report: Any) -> set[str]:
-    sections = _list(state, "report_sections")
-    if sections is None and report is not _MISSING:
-        sections = _list(report, "sections")
+    sections = _list(report, "sections") if report is not _MISSING else None
+    if sections is None:
+        sections = _list(state, "report_sections")
     values: list[Any] = []
     for section in sections or ():
         section_sources = _list(section, "sources")

@@ -18,9 +18,9 @@ or multi-agent message bus.
 | Stage | Input | Output | Default behavior |
 |---|---|---|---|
 | Planner | `query` | `ResearchPlan` | one structured LLM call; objectives, queries, outline |
-| Searcher | `ResearchPlan` | results, documents, source metadata | `deterministic_v2`; bounded search and extraction |
-| Synthesizer | filtered search results | findings | source-context synthesis; optional Evidence diagnostics stay off by default |
-| Writer | outline, findings, search results | report sections and Markdown report | serial section generation and citation formatting |
+| Searcher | `ResearchPlan` | `Documents` | `deterministic_v2`; bounded search, extraction, credibility-stable source ordering |
+| Synthesizer | `Documents` | source-linked `Findings` | structured claims map source numbers to `document_id`; Evidence stays optional |
+| Writer | plan, `Documents`, `Findings` | canonical `Report` | serial section generation; document order fixes citation numbering |
 
 ## Search behavior
 
@@ -30,7 +30,9 @@ or multi-agent message bus.
 2. normalize and de-duplicate URLs;
 3. extract a bounded number of pages, prioritizing query coverage;
 4. filter results by credibility;
-5. project retained sources into documents.
+5. project retained sources into unique Documents, retaining the first
+   credibility-sorted title/URI/snippet/credibility and filling only missing
+   body content from later duplicates.
 
 If an existing plan query lacks a result or extracted content, Searcher can run
 one supplementary attempt. The attempt reuses a missing planned query, permits
@@ -61,6 +63,16 @@ owns only shared retry and accounting helpers; `src/state_compat.py` is the
 explicit canonical-first boundary for legacy State, cache, and checkpoint
 payloads. It is deliberately not a Pydantic validator or automatic sync layer.
 
-The current migration is intentionally incomplete for sources and findings:
-Writer continues to consume `search_results` and `key_findings` so source order,
-citation numbering, and optional Evidence sidecar behavior remain unchanged.
+Canonical data flow is deliberately small:
+
+```text
+query → research_plan → documents → findings → report
+```
+
+`documents` is the single Writer bibliography. Its ordered, unique, valid web
+Documents define citation numbers, and `Report.citations[n-1]` is the exact
+target for every retained `[n]`. Findings must have at least one valid
+`source_document_id` before Writer can use them. Evidence only enriches
+`document_analyses`, `evidence`, and diagnostics; it never replaces Findings
+or changes Writer inputs. At the Graph output boundary, canonical values are
+explicitly projected to legacy fields for old checkpoints and consumers.

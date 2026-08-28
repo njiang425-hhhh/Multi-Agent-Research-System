@@ -7,7 +7,7 @@ import logging
 
 from src.config import config
 from src.graph import run_research
-from src.state_compat import canonical_iteration, canonical_plan, canonical_report, canonical_report_text
+from src.state_compat import canonical_documents, canonical_findings, canonical_iteration, canonical_plan, canonical_report, canonical_report_text
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,8 +64,8 @@ async def main():
             print(f"  - 报告章节：{len(plan.report_outline)}")
         
         print("\n研究数据摘要：")
-        print(f"  - 搜索结果：{len(final_state.get('search_results', []))}")
-        print(f"  - 关键发现：{len(final_state.get('key_findings', []))}")
+        print(f"  - 来源文档：{len(canonical_documents(final_state))}")
+        print(f"  - 来源关联发现：{len(canonical_findings(final_state))}")
         report = canonical_report(final_state)
         print(f"  - 报告章节：{len(report.sections) if report else len(final_state.get('report_sections', []))}")
         print(f"  - 迭代次数：{canonical_iteration(final_state)}")

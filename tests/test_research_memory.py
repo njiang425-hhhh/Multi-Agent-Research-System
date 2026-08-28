@@ -161,7 +161,7 @@ def test_planner_injects_memory_as_prior_context_and_projects_state(monkeypatch,
     assert "AI regulation uses risk tiers" in captured_prompt
     assert patch["retrieved_memory"]
     assert patch["memory_ids"] == [patch["retrieved_memory"][0].memory_id]
-    assert patch["plan"].search_queries[0].query == "AI regulation comparison"
+    assert patch["research_plan"].search_queries[0].query == "AI regulation comparison"
 
 
 class _FakeCredibilityScorer:
@@ -230,7 +230,7 @@ def test_searcher_adds_provenance_bearing_memory_hints_without_bypassing_executo
     ]
     assert patch["llm_call_details"][-1]["memory_hint_count"] == 1
     assert patch["memory_ids"] == ["mem-1"]
-    assert patch["search_results"][0].url == "https://result.example/source"
+    assert patch["documents"][0].uri == "https://result.example/source"
 
 
 def test_search_memory_hints_require_source_provenance() -> None:

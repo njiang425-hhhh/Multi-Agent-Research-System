@@ -160,7 +160,7 @@ def test_missing_extraction_runs_exactly_one_supplementary_search() -> None:
     patch = asyncio.run(_searcher(search_tool, extract_tool).search(_state("alpha")))
 
     assert search_tool.calls == ["alpha", "alpha"]
-    assert [result.url for result in patch["search_results"]] == [
+    assert [document.uri for document in patch["documents"]] == [
         "https://example.com/primary",
         "https://example.com/supplement",
     ]
@@ -226,7 +226,7 @@ def test_duplicate_only_supplement_is_no_progress_without_error() -> None:
     patch = asyncio.run(_searcher(search_tool, extract_tool).search(_state("alpha", "beta")))
 
     assert search_tool.calls == ["alpha", "beta"]
-    assert len(patch["search_results"]) == 1
+    assert len(patch["documents"]) == 1
     assert extract_tool.calls == ["https://example.com/primary"]
     assert patch["error"] is None
     assert patch["search_diagnostics"][-1]["outcome"] == "no_progress"
@@ -260,7 +260,7 @@ def test_supplementary_failure_keeps_primary_output_and_no_top_level_error() -> 
     patch = asyncio.run(_searcher(search_tool, extract_tool).search(_state("alpha", "beta")))
 
     assert search_tool.calls == ["alpha", "beta"]
-    assert [result.url for result in patch["search_results"]] == ["https://example.com/primary"]
+    assert [document.uri for document in patch["documents"]] == ["https://example.com/primary"]
     assert patch["error"] is None
     assert patch["search_diagnostics"][-1]["outcome"] == "supplementary_failed"
 

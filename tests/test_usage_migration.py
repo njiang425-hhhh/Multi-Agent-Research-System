@@ -18,6 +18,8 @@ from src.evidence.sidecar import EvidenceSidecarResult
 from src.search.config import SearchConfig
 from src.search.models import SearchExecutionResult, SearchExecutionStats
 from src.state import (
+    Document,
+    Finding,
     ReportSection,
     ResearchPlan,
     ResearchState,
@@ -49,9 +51,9 @@ def _search_result() -> SearchResult:
 def _state(**overrides: object) -> ResearchState:
     values: dict[str, object] = {
         "research_topic": "legacy topic",
-        "plan": _plan(),
-        "search_results": [_search_result()],
-        "key_findings": ["Legacy finding"],
+        "research_plan": _plan(),
+        "documents": [Document(document_id="doc-1", title="Fake source", uri="https://example.com/source", snippet="Fake source snippet", content="Fake source content")],
+        "findings": [Finding(finding_id="finding-1", statement="Legacy finding", source_document_ids=["doc-1"])],
         "llm_calls": 3,
         "total_input_tokens": 30,
         "total_output_tokens": 15,
@@ -199,7 +201,7 @@ def test_both_searcher_success_paths_double_write_usage(monkeypatch) -> None:
 
 class _FakeSynthesisAgent:
     async def ainvoke(self, _input: dict) -> dict:
-        return {"messages": [type("Message", (), {"content": '["Synthesized finding"]'})()]}
+        return {"messages": [type("Message", (), {"content": '[{"claim": "Synthesized finding", "source_numbers": [1]}]'})()]}
 
 
 class _FakeSidecar:

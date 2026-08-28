@@ -1,152 +1,59 @@
-"""Fake-only tests for the explicit legacy Writer -> V1 Report projection."""
+"""Canonical Writer and stable citation-number regression coverage."""
 
 import asyncio
+from types import SimpleNamespace
 
+from langchain_core.runnables import RunnableLambda
 from src.agents import ReportWriter
-from src.state import Report, ReportSection, ResearchPlan, ResearchState, SearchQuery, SearchResult
+from src.state import Document, Finding, ResearchPlan, ResearchState, ReportSection, SearchQuery
 
 
 FIRST_URL = "https://example.com/first"
 SECOND_URL = "https://example.com/second"
-EXTRA_URL = "https://example.com/extra"
-FOURTH_URL = "https://example.com/fourth"
 
 
-def _plan() -> ResearchPlan:
-    return ResearchPlan(
-        topic="legacy topic",
-        objectives=["Preserve legacy report output"],
-        search_queries=[SearchQuery(query="legacy topic", purpose="fake research")],
-        report_outline=["Summary", "Details"],
-    )
-
-
-def _search_result(url: str, title: str) -> SearchResult:
-    return SearchResult(
-        query="legacy topic",
-        title=title,
-        url=url,
-        snippet=f"Snippet for {title}",
-        content=f"Content for {title}",
-    )
-
-
-def _legacy_only_state() -> ResearchState:
-    return ResearchState.model_validate(
-        {
-            "research_topic": "legacy topic",
-            "plan": _plan().model_dump(),
-            "key_findings": ["Legacy finding"],
-            "search_results": [
-                _search_result(FIRST_URL, "First").model_dump(),
-                _search_result(SECOND_URL, "Second").model_dump(),
-                _search_result(FIRST_URL, "Duplicate first").model_dump(),
-            ],
-        }
-    )
-
-
-def test_writer_double_writes_a_v1_report_from_legacy_only_state(monkeypatch) -> None:
-    state = _legacy_only_state()
-    writer = ReportWriter(llm=object(), max_retries=1)
-    received: list[tuple[str, str, list[str]]] = []
-
-    async def fake_write_section(
-        topic: str,
-        section_title: str,
-        findings: list[str],
-        _search_results: list[SearchResult],
-    ) -> tuple[ReportSection, None]:
-        received.append((topic, section_title, findings))
-        sources = {
-            "Summary": [SECOND_URL, EXTRA_URL, FIRST_URL],
-            "Details": [EXTRA_URL, FOURTH_URL],
-        }[section_title]
-        return ReportSection(
-            title=section_title,
-            content=(f"{section_title} legacy content [1]. " * 30),
-            sources=sources,
-        ), None
-
-    monkeypatch.setattr(writer, "_write_section", fake_write_section)
-
-    patch = asyncio.run(writer.write_report(state))
-
-    assert state.report is None
-    assert received == [
-        ("legacy topic", "Summary", ["Legacy finding"]),
-        ("legacy topic", "Details", ["Legacy finding"]),
+def _state() -> ResearchState:
+    documents = [
+        Document(document_id="doc-1", title="First", uri=FIRST_URL, snippet="first", credibility={"level": "high"}),
+        Document(document_id="doc-2", title="Second", uri=SECOND_URL, snippet="second"),
     ]
-    assert patch["report_sections"]
-    assert patch["final_report"]
-    assert patch["report"].sections == patch["report_sections"]
-    assert patch["report"].content == patch["final_report"]
-    assert patch["report"].title == "legacy topic"
-    assert patch["report"].citations == [FIRST_URL, SECOND_URL, EXTRA_URL, FOURTH_URL]
-    assert patch["report"].report_id == ""
-    assert patch["report"].version == 1
-    assert patch["report"].status == "completed"
-    assert patch["iteration"] == state.iteration + 1
-    assert patch["current_stage"] == "complete"
-    assert patch["status"] == "completed"
+    return ResearchState(
+        research_topic="topic", query="topic",
+        research_plan=ResearchPlan(topic="topic", objectives=["test"], search_queries=[SearchQuery(query="topic", purpose="test")], report_outline=["Summary", "Details"]),
+        documents=documents,
+        findings=[Finding(finding_id="finding-1", statement="Source-linked finding", source_document_ids=["doc-1"])],
+        key_findings=["stale legacy finding"],
+    )
 
 
-def test_writer_keeps_legacy_inputs_when_a_stale_v1_report_is_present(monkeypatch) -> None:
-    state = _legacy_only_state()
-    state.report = Report(title="stale V1 report", content="stale content")
-    writer = ReportWriter(llm=object(), max_retries=1)
-    received: list[tuple[str, list[str]]] = []
+def test_writer_uses_only_canonical_inputs_and_returns_only_report(monkeypatch) -> None:
+    writer = ReportWriter(llm=RunnableLambda(lambda _input: "unused"), max_retries=1)
+    received = []
 
-    async def fake_write_section(
-        topic: str,
-        section_title: str,
-        findings: list[str],
-        _search_results: list[SearchResult],
-    ) -> tuple[ReportSection, None]:
-        received.append((topic, findings))
-        return ReportSection(
-            title=section_title,
-            content=("Fresh legacy writer content [1]. " * 30),
-            sources=[FIRST_URL],
-        ), None
+    async def fake_section(_topic, section_title, findings, documents, **_kwargs):
+        received.append((findings, documents))
+        return ReportSection(title=section_title, content=(f"{section_title} content [1]. " * 30), sources=[FIRST_URL]), [], None
 
-    monkeypatch.setattr(writer, "_write_section", fake_write_section)
+    monkeypatch.setattr(writer, "_write_section", fake_section)
+    patch = asyncio.run(writer.write_report(_state()))
 
-    patch = asyncio.run(writer.write_report(state))
-
-    assert received == [
-        ("legacy topic", ["Legacy finding"]),
-        ("legacy topic", ["Legacy finding"]),
-    ]
-    assert patch["report"].title == "legacy topic"
-    assert patch["report"].content == patch["final_report"]
-    assert patch["report"].content != "stale content"
+    assert len(received) == 2
+    assert received[0][0][0].statement == "Source-linked finding"
+    assert received[0][1][0].document_id == "doc-1"
+    assert "final_report" not in patch and "report_sections" not in patch
+    assert patch["report"].citations == [FIRST_URL, SECOND_URL]
+    assert patch["report"].sections[0].sources == [FIRST_URL]
+    assert "[1]" in patch["report"].content
 
 
-def test_writer_failure_paths_do_not_create_a_partial_v1_report(monkeypatch) -> None:
-    insufficient = ResearchState(research_topic="legacy topic")
-    insufficient_patch = asyncio.run(ReportWriter(llm=object(), max_retries=1).write_report(insufficient))
+def test_writer_drops_invalid_citation_numbers_and_keeps_section_sources_mapped(monkeypatch) -> None:
+    async def fake_execute(*_args, **_kwargs):
+        return SimpleNamespace(value="Grounded [2], invalid [3], and also [1]. " * 3, call_details=[], context=None)
 
-    assert insufficient_patch == {
-        "error": "报告生成所需的数据不足",
-        "current_stage": "failed",
-        "status": "failed",
-    }
-    assert "report" not in insufficient_patch
+    monkeypatch.setattr("src.agents.writer.execute_llm_operation", fake_execute)
+    writer = ReportWriter(llm=RunnableLambda(lambda _input: "unused"), max_retries=1)
+    state = _state()
+    section, _details, _context = asyncio.run(writer._write_section("topic", "Summary", state.findings, state.documents))
 
-    writer = ReportWriter(llm=object(), max_retries=1)
-
-    async def fake_failed_section(*_args, **_kwargs) -> tuple[None, None]:
-        return None, None
-
-    monkeypatch.setattr(writer, "_write_section", fake_failed_section)
-    failed_patch = asyncio.run(writer.write_report(_legacy_only_state()))
-
-    assert failed_patch == {
-        "error": "报告撰写失败：未生成报告章节",
-        "iterations": 1,
-        "iteration": 1,
-        "current_stage": "failed",
-        "status": "failed",
-    }
-    assert "report" not in failed_patch
+    assert "[3]" not in section.content
+    assert section.sources == [SECOND_URL, FIRST_URL]

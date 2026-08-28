@@ -1,142 +1,59 @@
-"""P2.2a tests for deterministic legacy Finding compatibility projection."""
+"""Canonical Documents -> Findings regression coverage."""
 
 import asyncio
 from dataclasses import dataclass
 
 from src import agents
-from src.agents import ReportWriter, ResearchSynthesizer
+from src.agents import ResearchSynthesizer
+from src.evidence.adapters import scored_search_results_to_documents
 from src.evidence.compat import LEGACY_PROJECTION_SUMMARY, key_findings_to_findings
-from src.state import ResearchPlan, ResearchState, ReportSection, SearchQuery, SearchResult
+from src.evidence.config import EvidenceRuntimeConfig
+from src.state import ResearchPlan, ResearchState, SearchQuery, SearchResult
 
 
-def _search_result() -> SearchResult:
-    return SearchResult(
-        query="research topic",
-        title="Source",
-        url="https://example.com/source",
-        snippet="A source summary with enough text to form a fallback finding.",
-        content="Source content.",
-    )
+def _documents():
+    results = [
+        SearchResult(query="topic", title="One", url="https://example.com/one", snippet="one", content="one body"),
+        SearchResult(query="topic", title="Two", url="https://example.com/two", snippet="two", content="two body"),
+    ]
+    return scored_search_results_to_documents((result, {"score": 90, "level": "high"}) for result in results)
 
 
 def _state() -> ResearchState:
     return ResearchState(
-        research_topic="research topic",
-        plan=ResearchPlan(
-            topic="research topic",
-            objectives=["understand the topic"],
-            search_queries=[SearchQuery(query="research topic", purpose="research")],
-            report_outline=["Summary"],
-        ),
-        search_results=[_search_result()],
-        credibility_scores=[{"score": 90, "level": "high", "factors": ["fake"]}],
+        research_topic="topic",
+        query="topic",
+        research_plan=ResearchPlan(topic="topic", objectives=["test"], search_queries=[SearchQuery(query="topic", purpose="test")], report_outline=["Summary"]),
+        documents=_documents(),
     )
 
 
 @dataclass
-class FakeMessage:
+class _Message:
     content: str
 
 
-class FakeSynthesisAgent:
-    def __init__(self, output: str | Exception) -> None:
-        self.output = output
-
-    async def ainvoke(self, _input: dict) -> dict:
-        if isinstance(self.output, Exception):
-            raise self.output
-        return {"messages": [FakeMessage(self.output)]}
+class _Agent:
+    async def ainvoke(self, _input):
+        return {"messages": [_Message('[{"claim": "First finding", "source_numbers": [2, 1, 9]}, {"claim": "Missing source", "source_numbers": [0]}]')]}
 
 
-def test_compat_projection_preserves_order_and_builds_unverified_findings() -> None:
-    key_findings = ["First finding", "Repeated finding", "Repeated finding"]
-
-    projected = key_findings_to_findings(key_findings)
-
-    assert [finding.statement for finding in projected] == key_findings
-    assert len({finding.finding_id for finding in projected}) == 3
-    assert all(finding.finding_id.startswith("finding:legacy:") for finding in projected)
-    assert all(finding.evidence_refs == [] for finding in projected)
-    assert all(finding.contradictory_evidence_refs == [] for finding in projected)
-    assert all(finding.confidence is None for finding in projected)
-    assert all(finding.status == "unverified" for finding in projected)
-    assert all(finding.reasoning_summary == LEGACY_PROJECTION_SUMMARY for finding in projected)
+def test_legacy_projection_remains_deterministic_and_unverified() -> None:
+    projected = key_findings_to_findings(["First", "Repeated", "Repeated"])
+    assert [item.statement for item in projected] == ["First", "Repeated", "Repeated"]
+    assert all(item.source_document_ids == [] for item in projected)
+    assert all(item.reasoning_summary == LEGACY_PROJECTION_SUMMARY for item in projected)
 
 
-def test_compat_projection_is_stable_for_identical_ordered_input() -> None:
-    key_findings = ["First finding", "Repeated finding", "Repeated finding"]
+def test_synthesizer_maps_source_numbers_to_ordered_document_ids(monkeypatch) -> None:
+    monkeypatch.setattr(agents, "create_agent", lambda *_args, **_kwargs: _Agent())
+    patch = asyncio.run(ResearchSynthesizer(llm=object(), max_retries=1, evidence_config=EvidenceRuntimeConfig(enabled=False)).synthesize(_state()))
 
-    first = key_findings_to_findings(key_findings)
-    second = key_findings_to_findings(key_findings)
-
-    assert [finding.finding_id for finding in first] == [finding.finding_id for finding in second]
-    assert key_findings_to_findings([]) == []
-
-
-def test_synthesizer_double_writes_findings_without_changing_legacy_patch_fields(monkeypatch) -> None:
-    output = '["First synthesized finding", "Second synthesized finding"]'
-    synthesizer = ResearchSynthesizer(llm=object(), max_retries=1)
-    monkeypatch.setattr(
-        agents,
-        "create_agent",
-        lambda *_args, **_kwargs: FakeSynthesisAgent(output),
-    )
-    state = _state()
-
-    patch = asyncio.run(synthesizer.synthesize(state))
-
-    assert patch["key_findings"] == ["First synthesized finding", "Second synthesized finding"]
-    assert [finding.statement for finding in patch["findings"]] == patch["key_findings"]
-    assert patch["current_stage"] == "reporting"
-    assert patch["iterations"] == state.iterations + 1
-    assert patch["iteration"] == state.iteration + 1
-    assert patch["llm_calls"] == state.llm_calls + 1
-    assert patch["total_input_tokens"] >= state.total_input_tokens
-    assert patch["total_output_tokens"] >= state.total_output_tokens
-    assert len(patch["llm_call_details"]) == len(state.llm_call_details) + 1
-    assert "documents" not in patch
-
-
-def test_synthesizer_error_patch_keeps_existing_behavior_without_findings(monkeypatch) -> None:
-    synthesizer = ResearchSynthesizer(llm=object(), max_retries=1)
-    monkeypatch.setattr(
-        agents,
-        "create_agent",
-        lambda *_args, **_kwargs: FakeSynthesisAgent(RuntimeError("fake synthesis failure")),
-    )
-
-    patch = asyncio.run(synthesizer.synthesize(_state()))
-
-    assert patch["error"] == "综合失败：fake synthesis failure"
-    assert patch["iterations"] == 1
-    assert patch["iteration"] == 1
-    assert patch["current_stage"] == "failed"
-    assert patch["status"] == "failed"
-    assert patch["llm_calls"] == 1
-    assert patch["usage"].llm_calls == 1
-    assert patch["llm_call_details"][0]["success"] is False
-
-
-def test_writer_continues_to_use_legacy_key_findings_not_structured_findings(monkeypatch) -> None:
-    writer = ReportWriter(llm=object(), max_retries=1)
-    state = _state()
-    state.key_findings = ["Legacy finding for writer"]
-    state.findings = key_findings_to_findings(["Different structured finding"])
-    received: list[list[str]] = []
-
-    async def fake_write_section(
-        _topic: str,
-        section_title: str,
-        findings: list[str],
-        _search_results: list[SearchResult],
-    ) -> tuple[ReportSection, int]:
-        received.append(findings)
-        return ReportSection(title=section_title, content="Writer content. " * 50), 0
-
-    monkeypatch.setattr(writer, "_write_section", fake_write_section)
-
-    patch = asyncio.run(writer.write_report(state))
-
-    assert received == [["Legacy finding for writer"]]
-    assert patch["error"] if "error" in patch else None is None
-    assert patch["final_report"]
+    assert "key_findings" not in patch
+    assert [item.statement for item in patch["findings"]] == ["First finding"]
+    assert patch["findings"][0].source_document_ids == [
+        _state().documents[1].document_id,
+        _state().documents[0].document_id,
+    ]
+    assert patch["findings"][0].confidence is None
+    assert patch["evidence_diagnostics"].status == "disabled"

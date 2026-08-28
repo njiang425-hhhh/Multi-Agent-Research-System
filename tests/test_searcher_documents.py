@@ -1,4 +1,4 @@
-"""P2.1 tests for explicit SearchResult -> Document double writes."""
+"""Canonical SearchResult -> Document conversion tests."""
 
 import asyncio
 import json
@@ -81,7 +81,7 @@ def _pair(result: SearchResult, score: int) -> dict:
     }
 
 
-def test_legacy_searcher_double_writes_documents_with_bound_credibility_and_deduplicates_urls(
+def test_legacy_searcher_returns_documents_with_bound_credibility_and_deduplicates_urls(
     monkeypatch,
 ) -> None:
     first = _result("HTTPS://EXAMPLE.COM/guide/#overview", title="First")
@@ -97,12 +97,8 @@ def test_legacy_searcher_double_writes_documents_with_bound_credibility_and_dedu
 
     patch = asyncio.run(searcher.search(_state()))
 
-    assert patch["search_results"] == [first, duplicate, invalid]
-    assert patch["credibility_scores"] == [
-        {"score": 91, "level": "high", "source": "First"},
-        {"score": 82, "level": "high", "source": "Duplicate"},
-        {"score": 70, "level": "high", "source": "Invalid"},
-    ]
+    assert "search_results" not in patch
+    assert "credibility_scores" not in patch
     assert len(patch["documents"]) == 2
     assert patch["documents"][0].uri == "https://example.com/guide"
     assert patch["documents"][0].credibility["source"] == "First"
@@ -110,7 +106,7 @@ def test_legacy_searcher_double_writes_documents_with_bound_credibility_and_dedu
     assert patch["documents"][1].credibility["source"] == "Invalid"
 
 
-def test_deterministic_searcher_double_writes_without_changing_partial_legacy_outputs() -> None:
+def test_deterministic_searcher_returns_credibility_sorted_documents() -> None:
     first = _result("https://one.example/path", title="One", content="full text")
     second = _result("https://two.example/path", title="Two", content=None)
     scorer = FakeCredibilityScorer([_pair(second, 85), _pair(first, 75)])
@@ -130,11 +126,8 @@ def test_deterministic_searcher_double_writes_without_changing_partial_legacy_ou
 
     patch = asyncio.run(searcher.search(_state()))
 
-    assert patch["search_results"] == [second, first]
-    assert patch["credibility_scores"] == [
-        {"score": 85, "level": "high", "source": "Two"},
-        {"score": 75, "level": "high", "source": "One"},
-    ]
+    assert "search_results" not in patch
+    assert "credibility_scores" not in patch
     assert [document.title for document in patch["documents"]] == ["Two", "One"]
     assert patch["documents"][0].credibility["source"] == "Two"
     assert patch["documents"][0].status == "content_unavailable"
@@ -155,8 +148,6 @@ def test_deterministic_searcher_keeps_existing_empty_result_error_behavior() -> 
     patch = asyncio.run(searcher.search(_state()))
 
     assert patch == {
-        "search_results": [],
-        "credibility_scores": [],
         "error": "搜索失败：fake search failure",
         "iterations": 1,
         "iteration": 1,
@@ -165,7 +156,7 @@ def test_deterministic_searcher_keeps_existing_empty_result_error_behavior() -> 
     }
 
 
-def test_deterministic_searcher_keeps_single_result_in_both_legacy_and_document_fields() -> None:
+def test_deterministic_searcher_keeps_single_result_as_a_document() -> None:
     only = _result("https://one.example/path", title="Only")
     searcher = ResearchSearcher(
         llm=object(),
@@ -178,6 +169,27 @@ def test_deterministic_searcher_keeps_single_result_in_both_legacy_and_document_
 
     patch = asyncio.run(searcher.search(_state()))
 
-    assert patch["search_results"] == [only]
+    assert "search_results" not in patch
     assert len(patch["documents"]) == 1
     assert patch["documents"][0].credibility["score"] == 88
+
+
+def test_duplicate_document_keeps_first_metadata_but_fills_missing_content() -> None:
+    first = _result("https://example.com/source", title="First", content=None)
+    duplicate = _result("https://example.com/source/#fragment", title="Later", content="later body")
+    scorer = FakeCredibilityScorer([_pair(first, 95), _pair(duplicate, 80)])
+    searcher = ResearchSearcher(
+        llm=object(),
+        credibility_scorer=scorer,
+        search_config=SearchConfig(mode="deterministic_v2"),
+    )
+    searcher.search_executor = FakeSearchExecutor(
+        SearchExecutionResult(search_results=[first, duplicate], stats=SearchExecutionStats())
+    )
+
+    patch = asyncio.run(searcher.search(_state()))
+
+    assert len(patch["documents"]) == 1
+    assert patch["documents"][0].title == "First"
+    assert patch["documents"][0].credibility["score"] == 95
+    assert patch["documents"][0].content == "later body"

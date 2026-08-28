@@ -98,17 +98,33 @@ def scored_search_results_to_documents(
 
     The caller supplies each ``SearchResult`` together with its own credibility
     record.  This deliberately avoids reconstructing that association from
-    separate State lists.  Documents are deduplicated by their stable adapter
-    identity while leaving the legacy result sequence untouched.
+    separate State lists. Documents are deduplicated by stable identity. The
+    first item wins because callers provide credibility-stable order; a later
+    duplicate may fill only missing body content.
     """
     documents: list[Document] = []
-    seen_document_ids: set[str] = set()
+    positions: dict[str, int] = {}
 
     for result, credibility in scored_results:
         document = search_result_to_document(result, credibility=credibility)
-        if document.document_id in seen_document_ids:
+        existing_index = positions.get(document.document_id)
+        if existing_index is not None:
+            existing = documents[existing_index]
+            if not (existing.content and existing.content.strip()) and (
+                document.content and document.content.strip()
+            ):
+                existing.content = document.content
+                if existing.status == "content_unavailable":
+                    existing.status = "retrieved"
+            search_queries = list(existing.metadata.get("search_queries", []))
+            query = document.metadata.get("search_query")
+            if query and query not in search_queries:
+                search_queries.append(query)
+            existing.metadata["search_queries"] = search_queries
             continue
-        seen_document_ids.add(document.document_id)
+        query = document.metadata.get("search_query")
+        document.metadata["search_queries"] = [query] if query else []
+        positions[document.document_id] = len(documents)
         documents.append(document)
 
     return documents

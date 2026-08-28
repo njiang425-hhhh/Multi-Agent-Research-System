@@ -12,7 +12,7 @@ from src.agents import ReportWriter, ResearchPlanner, ResearchSynthesizer
 from src.exceptions import LLMError
 from src.runtime_control import RunPolicy, create_execution_context
 from src.agent_trace import AgentTraceEvent
-from src.state import ReportSection, ResearchPlan, ResearchState, SearchQuery, SearchResult
+from src.state import Document, Finding, ReportSection, ResearchPlan, ResearchState, SearchQuery, SearchResult
 from src.writer_profile import profile_writer_latency, profile_writer_trace
 
 
@@ -47,14 +47,14 @@ def _search_result(title: str, url: str) -> SearchResult:
 def _writer_state(*, sections: list[str], context=None) -> ResearchState:
     return ResearchState(
         research_topic="topic",
-        plan=ResearchPlan(
+        research_plan=ResearchPlan(
             topic="topic",
             objectives=["objective"],
             search_queries=[SearchQuery(query="topic", purpose="fake")],
             report_outline=sections,
         ),
-        key_findings=["A sufficiently useful fake finding."],
-        search_results=[_result()],
+        documents=[Document(document_id="doc-1", title="Fake source", uri="https://example.com/source", snippet="Fake snippet", content="Fake content")],
+        findings=[Finding(finding_id="finding-1", statement="A sufficiently useful fake finding.", source_document_ids=["doc-1"])],
         execution_context=context,
     )
 
@@ -140,8 +140,8 @@ def test_writer_bounded_sections_respect_concurrency_and_assemble_by_outline(mon
     async def fake_write_section(
         _topic: str,
         section_title: str,
-        _findings: list[str],
-        _search_results: list[SearchResult],
+        _findings: list[Finding],
+        _documents: list[Document],
         **_kwargs,
     ) -> tuple[ReportSection, dict]:
         nonlocal active, max_active
@@ -172,9 +172,9 @@ def test_writer_bounded_sections_respect_concurrency_and_assemble_by_outline(mon
 
     assert max_active == 2
     assert completed[:2] == ["Two", "One"]
-    assert [section.title for section in patch["report_sections"]] == ["One", "Two", "Three"]
-    assert patch["final_report"].index("## One") < patch["final_report"].index("## Two")
-    assert patch["final_report"].index("## Two") < patch["final_report"].index("## Three")
+    assert [section.title for section in patch["report"].sections] == ["One", "Two", "Three"]
+    assert patch["report"].content.index("## One") < patch["report"].content.index("## Two")
+    assert patch["report"].content.index("## Two") < patch["report"].content.index("## Three")
     assert [detail["section_index"] for detail in patch["llm_call_details"]] == [0, 1, 2]
     assert {detail["writer_execution_mode"] for detail in patch["llm_call_details"]} == {"bounded"}
 
@@ -235,10 +235,10 @@ def test_writer_section_citations_preserve_first_seen_order() -> None:
         writer._write_section(
             "topic",
             "Summary",
-            ["Finding"],
+            [Finding(finding_id="finding", statement="Finding", source_document_ids=["doc-1"])],
             [
-                _search_result("First", "https://example.com/first"),
-                _search_result("Second", "https://example.com/second"),
+                Document(document_id="doc-1", title="First", uri="https://example.com/first"),
+                Document(document_id="doc-2", title="Second", uri="https://example.com/second"),
             ],
         )
     )

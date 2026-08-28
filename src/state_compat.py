@@ -11,13 +11,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from src.evidence.adapters import search_result_to_document
+from src.evidence.adapters import scored_search_results_to_documents
 from src.evidence.compat import key_findings_to_findings
 from src.state import (
+    Document,
+    Finding,
     Report,
     ReportSection,
     ResearchPlan,
     ResearchState,
+    SearchResult,
     UsageMetrics,
 )
 
@@ -151,6 +154,68 @@ def canonical_report_text(state: ResearchState | Mapping[str, Any]) -> str | Non
     return str(value) if value else None
 
 
+def canonical_documents(state: ResearchState | Mapping[str, Any]) -> list[Document]:
+    """Return validated canonical Documents without reading legacy results."""
+
+    documents: list[Document] = []
+    for value in _read(state, "documents", ()) or ():
+        try:
+            documents.append(value if isinstance(value, Document) else Document.model_validate(value))
+        except Exception:
+            continue
+    return documents
+
+
+def canonical_findings(state: ResearchState | Mapping[str, Any]) -> list[Finding]:
+    """Return validated canonical Findings without reading legacy strings."""
+
+    findings: list[Finding] = []
+    for value in _read(state, "findings", ()) or ():
+        try:
+            findings.append(value if isinstance(value, Finding) else Finding.model_validate(value))
+        except Exception:
+            continue
+    return findings
+
+
+def legacy_projection_patch(state: ResearchState, patch: Mapping[str, Any]) -> dict[str, Any]:
+    """Project canonical business outputs to legacy fields at a graph boundary.
+
+    Agent bodies return canonical task data only. This explicit boundary keeps
+    historical callers, cached payloads, and UI views readable without hidden
+    model-level synchronization.
+    """
+
+    projected = dict(patch)
+    updated = state.model_copy(update=projected)
+    if "research_plan" in projected:
+        projected["plan"] = updated.research_plan
+    if "documents" in projected:
+        search_results: list[SearchResult] = []
+        credibility_scores: list[dict[str, Any]] = []
+        for document in canonical_documents(updated):
+            search_results.append(
+                SearchResult(
+                    query=str(document.metadata.get("search_query") or canonical_query(updated)),
+                    title=document.title,
+                    url=document.uri,
+                    snippet=document.snippet,
+                    content=document.content,
+                )
+            )
+            credibility_scores.append(dict(document.credibility or {}))
+        projected["search_results"] = search_results
+        projected["credibility_scores"] = credibility_scores
+    if "findings" in projected:
+        projected["key_findings"] = [
+            finding.statement for finding in canonical_findings(updated) if finding.statement
+        ]
+    if "report" in projected and updated.report is not None:
+        projected["report_sections"] = list(updated.report.sections)
+        projected["final_report"] = updated.report.content
+    return projected
+
+
 def canonical_patch_from_legacy(
     state: ResearchState,
     *,
@@ -165,13 +230,13 @@ def canonical_patch_from_legacy(
         patch["research_plan"] = state.plan
     if include_semantic_projections and not state.documents and state.search_results:
         scores = list(state.credibility_scores)
-        patch["documents"] = [
-            search_result_to_document(
+        patch["documents"] = scored_search_results_to_documents(
+            (
                 result,
-                credibility=scores[index] if index < len(scores) else None,
+                scores[index] if index < len(scores) else {},
             )
             for index, result in enumerate(state.search_results)
-        ]
+        )
     if include_semantic_projections and not state.findings and state.key_findings:
         patch["findings"] = key_findings_to_findings(state.key_findings)
     if include_semantic_projections and state.report is None and state.final_report:

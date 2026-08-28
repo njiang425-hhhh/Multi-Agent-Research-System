@@ -37,7 +37,7 @@ async def _planner_output(case_id: str) -> ResearchPlan:
     patch = await planner.plan(ResearchState(research_topic=payload["topic"]))
     assert patch["llm_calls"] == 1
     assert len(patch["llm_call_details"]) == 1
-    return patch["plan"]
+    return patch["research_plan"]
 
 
 def _metric(result, name: str):
@@ -140,4 +140,4 @@ def test_planner_prompt_requires_aligned_outline_and_labeled_diverse_purposes() 
     assert "purpose" in captured
     assert "risk_limitations:" in captured
     assert "\u81f3\u5c11\u4e00\u4e2a\u5bf9\u5e94\u7ae0\u8282" in captured
-    assert patch["plan"].search_queries[0].purpose.startswith("comparison:")
+    assert patch["research_plan"].search_queries[0].purpose.startswith("comparison:")

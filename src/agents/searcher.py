@@ -317,8 +317,6 @@ class ResearchSearcher:
                 }
 
                 return {
-                    "search_results": sorted_results,
-                    "credibility_scores": credibility_scores,
                     "documents": documents,
                     "current_stage": "synthesizing",
                     "iterations": canonical_iteration(state) + 1,
@@ -536,8 +534,6 @@ class ResearchSearcher:
             error = execution.error or "Deterministic Search Executor 没有返回搜索结果"
             await emit_error(f"搜索失败：{error}")
             failure_patch = {
-                "search_results": [],
-                "credibility_scores": [],
                 "error": f"搜索失败：{error}",
                 "iterations": canonical_iteration(state) + 1,
                 "iteration": canonical_iteration(state) + 1,
@@ -592,8 +588,6 @@ class ResearchSearcher:
         )
 
         result_patch = {
-            "search_results": sorted_results,
-            "credibility_scores": credibility_scores,
             "documents": documents,
             "retrieved_memory": retrieved_memory,
             "memory_ids": [item.memory_id for item in retrieved_memory],

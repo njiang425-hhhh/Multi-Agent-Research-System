@@ -14,7 +14,7 @@ from src.agent_trace import (
 )
 from src import graph as graph_module
 from src.runtime_lifecycle import create_new_run_state
-from src.state import ResearchPlan, ResearchState, SearchQuery, SearchResult
+from src.state import Document, Finding, Report, ResearchPlan, ResearchState, SearchQuery, SearchResult
 
 
 def test_trace_node_projects_legacy_llm_and_search_runtime_without_changing_usage() -> None:
@@ -148,15 +148,14 @@ def test_graph_wraps_all_four_existing_nodes_with_trace_without_changing_routes(
         search_queries=[SearchQuery(query="fake query", purpose="fake purpose")],
         report_outline=["fake outline"],
     )
-    results = [
-        SearchResult(query="fake query", title="one", url="https://example.com/one", snippet="one"),
-        SearchResult(query="fake query", title="two", url="https://example.com/two", snippet="two"),
+    documents = [
+        Document(document_id="one", title="one", uri="https://example.com/one", snippet="one"),
+        Document(document_id="two", title="two", uri="https://example.com/two", snippet="two"),
     ]
 
     class FakePlanner:
         async def plan(self, state):
             return {
-                "plan": plan,
                 "research_plan": plan,
                 "llm_call_details": state.llm_call_details + [
                     {"agent": "ResearchPlanner", "operation": "plan", "duration": 0.1}
@@ -165,18 +164,18 @@ def test_graph_wraps_all_four_existing_nodes_with_trace_without_changing_routes(
 
     class FakeSearcher:
         async def search(self, state):
-            return {"search_results": results, "llm_call_details": state.llm_call_details}
+            return {"documents": documents, "llm_call_details": state.llm_call_details}
 
     class FakeSynthesizer:
         async def synthesize(self, state):
-            return {"key_findings": ["fake finding"], "llm_call_details": state.llm_call_details}
+            return {"findings": [Finding(finding_id="finding", statement="fake finding", source_document_ids=["one"])], "llm_call_details": state.llm_call_details}
 
     class FakeWriter:
         def __init__(self, **_kwargs):
             pass
 
         async def write_report(self, state):
-            return {"final_report": "# fake report", "llm_call_details": state.llm_call_details}
+            return {"report": Report(title="fake", content="# fake report", citations=["https://example.com/one"], status="completed"), "llm_call_details": state.llm_call_details}
 
     monkeypatch.setattr(graph_module, "ResearchPlanner", FakePlanner)
     monkeypatch.setattr(graph_module, "ResearchSearcher", FakeSearcher)

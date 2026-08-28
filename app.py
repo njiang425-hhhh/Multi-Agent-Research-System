@@ -9,7 +9,7 @@ from typing import Optional
 from src.config import config
 from src.graph import create_research_graph
 from src.runtime_lifecycle import apply_terminal_lifecycle, create_new_run_state, start_run
-from src.state_compat import canonical_report, canonical_report_text, canonical_usage
+from src.state_compat import canonical_documents, canonical_findings, canonical_report, canonical_report_text, canonical_usage
 from src.utils.exports import ReportExporter
 from src.utils.history import ResearchHistory
 from src.callbacks import (
@@ -225,9 +225,9 @@ async def run_research_with_updates(topic: str, progress_display: EnhancedProgre
         graph = create_research_graph()
         final_state = apply_terminal_lifecycle(await graph.ainvoke(initial_state))
         
-        search_results = final_state.get('search_results', [])
-        key_findings = final_state.get('key_findings', [])
-        await emit_complete(topic, len(search_results), len(key_findings))
+        documents = canonical_documents(final_state)
+        findings = canonical_findings(final_state)
+        await emit_complete(topic, len(documents), len(findings))
         
         return final_state
     finally:
@@ -530,21 +530,21 @@ MODEL_NAME=gemini-2.5-flash
             return
         
         # 提取结果
-        search_results = final_state.get('search_results', [])
-        key_findings = final_state.get('key_findings', [])
+        documents = canonical_documents(final_state)
+        findings = canonical_findings(final_state)
         canonical_result_report = canonical_report(final_state)
         report_sections = (
             canonical_result_report.sections
             if canonical_result_report is not None
             else final_state.get('report_sections', [])
         )
-        credibility_scores = final_state.get('credibility_scores', [])
+        credibility_scores = [document.credibility or {} for document in documents]
         
         # 统计指标
         unique_sources = set()
-        for result in search_results:
-            if hasattr(result, 'url') and result.url:
-                unique_sources.add(result.url)
+        for document in documents:
+            if document.uri:
+                unique_sources.add(document.uri)
         
         high_cred = sum(1 for s in credibility_scores if s.get('level') == 'high')
         medium_cred = sum(1 for s in credibility_scores if s.get('level') == 'medium')
@@ -566,14 +566,14 @@ MODEL_NAME=gemini-2.5-flash
             cl.Action(
                 name="view_sources",
                 payload={
-                    "sources": [{"title": r.title, "url": r.url} for r in search_results[:30]],
+                    "sources": [{"title": document.title, "url": document.uri} for document in documents[:30]],
                     "credibility": credibility_scores[:30]
                 },
                 label="查看来源"
             ),
             cl.Action(
                 name="view_findings",
-                payload={"findings": key_findings[:20]},
+                payload={"findings": [finding.statement for finding in findings[:20]]},
                 label="查看发现"
             )
         ]
@@ -588,7 +588,7 @@ MODEL_NAME=gemini-2.5-flash
 | 来源 | 去重后总数 | **{len(unique_sources)}** |
 | | 高可信度 | **{high_cred}** [高] |
 | | 中可信度 | **{medium_cred}** [中] |
-| 分析 | 关键洞见 | **{len(key_findings)}** |
+| 分析 | 关键洞见 | **{len(findings)}** |
 | | 报告章节 | **{len(report_sections)}** |
 | 性能 | 总耗时 | **{elapsed} 秒** |
 | | LLM 调用次数 | **{llm_calls}** |
@@ -633,7 +633,7 @@ MODEL_NAME=gemini-2.5-flash
                 metadata={
                     'sources': len(unique_sources),
                     'sections': len(report_sections),
-                    'findings': len(key_findings),
+                    'findings': len(findings),
                     'elapsed_seconds': elapsed,
                     'total_tokens': total_tokens
                 }

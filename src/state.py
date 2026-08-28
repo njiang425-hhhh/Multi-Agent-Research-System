@@ -30,8 +30,8 @@ class SearchResult(BaseModel):
 class Document(BaseModel):
     """ResearchOS 的通用文档模型。
 
-    当前 Deep Research 流程仍使用 SearchResult；该模型先作为 V1 标准
-    documents 字段的契约，为网页、文件、数据库和记忆文档预留统一结构。
+    ``documents`` 是 Research Agent 的唯一来源集合。网页搜索结果在
+    compatibility boundary 转换、去重并按可信度稳定排序后进入该字段。
     """
 
     document_id: str = Field(default="", description="文档稳定标识")
@@ -50,6 +50,10 @@ class Finding(BaseModel):
 
     finding_id: str = Field(default="", description="发现稳定标识")
     statement: str = Field(default="", description="发现内容")
+    source_document_ids: List[str] = Field(
+        default_factory=list,
+        description="支撑该发现的 canonical Document ID（按 citation 顺序）",
+    )
     evidence_refs: List[str] = Field(default_factory=list, description="支持证据或文档 ID")
     contradictory_evidence_refs: List[str] = Field(
         default_factory=list,

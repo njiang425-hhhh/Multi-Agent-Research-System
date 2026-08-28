@@ -4,7 +4,7 @@ ResearchOS is a compact, source-aware research agent. It turns one research
 question into a structured Markdown report through a fixed four-stage flow:
 
 ```text
-Question → Planner → Searcher → Synthesizer → Writer → Markdown report
+Query → ResearchPlan → Documents → Findings → Report
 ```
 
 The project is designed as an Agent-development portfolio: the important parts
@@ -21,8 +21,8 @@ as a production Agent Platform.
 - **Bounded adaptive follow-up** — when planned-query coverage is incomplete,
   Searcher may run at most one supplementary search and extraction. It never
   replans, loops, or changes the Graph.
-- **Synthesizer** — turns the gathered sources into research findings.
-- **Writer** — follows the planned outline and produces a cited Markdown report.
+- **Synthesizer** — turns canonical Documents into source-linked Findings.
+- **Writer** — follows the planned outline and produces one canonical cited Report.
 - **Observability and evaluation** — trace, usage accounting, and read-only
   evaluation make a run inspectable without changing its route.
 
@@ -35,13 +35,13 @@ User question
 Planner ── ResearchPlan(objectives, queries, outline)
     │
     ▼
-Searcher ── deterministic search + extract + provenance
+Searcher ── deterministic search + extract + Documents (unique, credibility-stable)
     │           └─ optional one-round adaptive follow-up
     ▼
-Synthesizer ── findings
+Synthesizer ── Findings(statement + source_document_ids)
     │
     ▼
-Writer ── cited Markdown report
+Writer ── Report(content + ordered citations)
 ```
 
 The LangGraph topology remains linear. Search adaptation stays inside the
@@ -92,9 +92,11 @@ the existing query plan; it is not a general reflection loop.
 
 ## Source provenance and limits
 
-Each search result retains its originating query, title, URL, snippet, and
-extracted content when available. Search results are de-duplicated, scored,
-projected into documents, and later surfaced through report citations.
+Each retained Document carries its originating query, title, normalized URL,
+snippet, extracted content when available, and credibility metadata. Documents
+are unique and retain Searcher's credibility-stable order: that order is the
+citation map, so `[n]` always resolves to `Report.citations[n-1]` and a URL
+receives only one bibliography number.
 
 The optional Evidence sidecar provides deeper document analysis diagnostics,
 but it is disabled by default and does not control Graph routing. It should not
@@ -127,9 +129,9 @@ experiments/
 
 The `src/agents/` package is the stable public entry point: each role owns its
 own class body, while `src/state_compat.py` provides the explicit,
-canonical-first compatibility boundary for legacy State payloads. Writer still
-uses the established result and finding sequence to preserve citation numbering
-and optional Evidence-sidecar behavior.
+canonical-first compatibility boundary for legacy State payloads. Legacy
+`search_results`, `key_findings`, `report_sections`, and `final_report` are
+Graph-output projections, not Agent inputs.
 
 ## Validation
 
