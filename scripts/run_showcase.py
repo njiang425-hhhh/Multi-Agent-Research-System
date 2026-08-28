@@ -26,7 +26,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=Path("artifacts/showcase"),
+        default=Path("experiments/archives/showcase"),
         help="Parent directory for one timestamped showcase archive.",
     )
     parser.add_argument(

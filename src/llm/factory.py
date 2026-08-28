@@ -1,7 +1,7 @@
 """LLM Provider 工厂。
 
-该模块集中负责创建 LangChain ChatModel 实例。Provider 行为保持与原
-src.agents.get_llm() 一致；业务 Agent 只依赖 BaseChatModel 接口。
+该模块集中负责创建 LangChain ChatModel 实例。Provider 行为集中在这里，
+业务 Agent 只依赖 BaseChatModel 接口。
 """
 
 import logging

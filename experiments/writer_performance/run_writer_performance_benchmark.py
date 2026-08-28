@@ -13,7 +13,7 @@ from time import perf_counter
 from typing import Any
 import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -40,7 +40,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=Path("artifacts/writer-performance-experiments"),
+        default=Path("experiments/archives/writer-performance-experiments"),
         help="Parent directory for a timestamped JSON and Markdown archive.",
     )
     return parser.parse_args()
