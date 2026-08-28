@@ -20,6 +20,7 @@ from src.evaluation.contracts import (
     UsageEvaluationSummary,
 )
 from src.evaluation.snapshot import build_evaluation_snapshot, validate_evaluation_snapshot
+from src.state_compat import canonical_report_text
 
 
 EXPECTED_COMPLETED_NODES = ("plan", "search", "synthesize", "write_report")
@@ -144,14 +145,12 @@ def _coverage_summary(state: Any, completed: bool) -> tuple[CoverageEvaluationSu
 
 
 def _report_summary(state: Any, completed: bool) -> tuple[ReportEvaluationSummary, EvaluationMetric]:
-    final_report = _read(state, "final_report", _MISSING)
     report = _read(state, "report", _MISSING)
+    final_report = canonical_report_text(state)
     sections = _list(state, "report_sections")
     if sections is None and report is not _MISSING:
         sections = _list(report, "sections")
-    if final_report is _MISSING and report is not _MISSING:
-        final_report = _read(report, "content", _MISSING)
-    if final_report is _MISSING:
+    if final_report is None:
         return ReportEvaluationSummary(), _metric(
             "report_structure", "unavailable", reason="report fields are absent from this result"
         )
@@ -212,7 +211,7 @@ def _quality_metrics(
     documents = _list(state, "documents")
     evidence = _list(state, "evidence")
     report = _read(state, "report", _MISSING)
-    final_report = _read(state, "final_report", _MISSING)
+    final_report = canonical_report_text(state)
     document_urls = _source_urls([_read(document, "uri", "") for document in documents or ()])
     document_urls_by_id = {
         str(_read(document, "document_id", "")): str(_read(document, "uri", "")).strip()
@@ -239,7 +238,7 @@ def _quality_metrics(
         cited_source_count=len(cited_urls),
         grounded_citation_count=len(grounded_citations),
         ungrounded_citation_count=len(ungrounded_citations),
-        report_character_count=len(str(final_report or "")) if final_report is not _MISSING else 0,
+        report_character_count=len(str(final_report or "")) if final_report is not None else 0,
     )
 
     if documents is None:
@@ -260,7 +259,7 @@ def _quality_metrics(
             "grounded_citation", "unavailable", value=summary.model_dump(),
             reason="evidence is absent; grounded citations cannot be established",
         )
-    elif final_report is _MISSING:
+    elif final_report is None:
         citation_metric = _metric(
             "grounded_citation", "unavailable", value=summary.model_dump(),
             reason="report fields are absent; report citations cannot be established",
@@ -276,7 +275,7 @@ def _quality_metrics(
     else:
         citation_metric = _metric("grounded_citation", "passed", value=summary.model_dump())
 
-    if final_report is _MISSING:
+    if final_report is None:
         completeness_metric = _metric(
             "report_completeness", "unavailable", value=summary.model_dump(),
             reason="report fields are absent from this result",
@@ -310,7 +309,7 @@ def evaluate_run(
     status = _read(state, "status", _MISSING)
     stage = _read(state, "current_stage", _MISSING)
     error = _read(state, "error", None)
-    report_text = _read(state, "final_report", None)
+    report_text = canonical_report_text(state)
     completed = status == "completed" and stage == "complete" and bool(report_text) and not error
     lifecycle_known = status is not _MISSING and stage is not _MISSING
     lifecycle_metric = (

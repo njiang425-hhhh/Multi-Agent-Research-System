@@ -17,6 +17,11 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from src.state import ResearchState
+from src.state_compat import (
+    canonical_plan,
+    canonical_report_text,
+    hydrate_canonical_state,
+)
 from src.runtime_lifecycle import (
     adopt_terminal_lifecycle_patch,
     apply_terminal_lifecycle,
@@ -137,19 +142,23 @@ def create_research_graph(checkpointer=None):
     
     workflow = StateGraph(ResearchState)
     
-    # Agents retain business patches and legacy tracking; this boundary only
-    # appends observability events to checkpointed state.
+    # Agents return canonical business patches. This boundary explicitly adds
+    # legacy projections for historical checkpoints, UI, and callers.
     async def plan_node(state: ResearchState) -> Dict[str, Any]:
-        return await trace_node_execution(state, node="plan", agent="ResearchPlanner", operation="plan", execute=planner.plan)
+        canonical_state = hydrate_canonical_state(state, include_semantic_projections=False)
+        return await trace_node_execution(canonical_state, node="plan", agent="ResearchPlanner", operation="plan", execute=planner.plan)
 
     async def search_node(state: ResearchState) -> Dict[str, Any]:
-        return await trace_node_execution(state, node="search", agent="ResearchSearcher", operation="search", execute=searcher.search)
+        canonical_state = hydrate_canonical_state(state, include_semantic_projections=False)
+        return await trace_node_execution(canonical_state, node="search", agent="ResearchSearcher", operation="search", execute=searcher.search)
 
     async def synthesize_node(state: ResearchState) -> Dict[str, Any]:
-        return await trace_node_execution(state, node="synthesize", agent="ResearchSynthesizer", operation="synthesize", execute=synthesizer.synthesize)
+        canonical_state = hydrate_canonical_state(state, include_semantic_projections=False)
+        return await trace_node_execution(canonical_state, node="synthesize", agent="ResearchSynthesizer", operation="synthesize", execute=synthesizer.synthesize)
 
     async def writer_node(state: ResearchState) -> Dict[str, Any]:
-        return await trace_node_execution(state, node="write_report", agent="ReportWriter", operation="write_report", execute=writer.write_report)
+        canonical_state = hydrate_canonical_state(state, include_semantic_projections=False)
+        return await trace_node_execution(canonical_state, node="write_report", agent="ReportWriter", operation="write_report", execute=writer.write_report)
 
     workflow.add_node("plan", plan_node)
     workflow.add_node("search", search_node)
@@ -164,7 +173,7 @@ def create_research_graph(checkpointer=None):
             logger.error(f"规划失败：{state.error}")
             return END
         
-        plan = state.research_plan or state.plan
+        plan = canonical_plan(state)
         if not plan or not plan.search_queries:
             logger.error("计划中未生成搜索查询")
             return END
@@ -206,7 +215,7 @@ def create_research_graph(checkpointer=None):
         """验证最终报告并完成流程。"""
         if state.error:
             logger.error(f"报告生成失败：{state.error}")
-        elif not state.final_report:
+        elif not canonical_report_text(state):
             logger.error("未生成报告")
         else:
             logger.info("报告生成完成")

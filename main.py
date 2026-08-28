@@ -7,6 +7,7 @@ import logging
 
 from src.config import config
 from src.graph import run_research
+from src.state_compat import canonical_iteration, canonical_plan, canonical_report, canonical_report_text
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,8 +56,8 @@ async def main():
         print("研究完成")
         print("=" * 80)
         
-        if final_state.get("plan"):
-            plan = final_state["plan"]
+        plan = canonical_plan(final_state)
+        if plan:
             print("\n研究计划摘要：")
             print(f"  - 目标：{len(plan.objectives)}")
             print(f"  - 搜索查询：{len(plan.search_queries)}")
@@ -65,11 +66,13 @@ async def main():
         print("\n研究数据摘要：")
         print(f"  - 搜索结果：{len(final_state.get('search_results', []))}")
         print(f"  - 关键发现：{len(final_state.get('key_findings', []))}")
-        print(f"  - 报告章节：{len(final_state.get('report_sections', []))}")
-        print(f"  - 迭代次数：{final_state.get('iterations', 0)}")
+        report = canonical_report(final_state)
+        print(f"  - 报告章节：{len(report.sections) if report else len(final_state.get('report_sections', []))}")
+        print(f"  - 迭代次数：{canonical_iteration(final_state)}")
         
         # 保存报告
-        if final_state.get("final_report"):
+        final_report = canonical_report_text(final_state)
+        if final_report:
             output_dir = Path("outputs")
             output_dir.mkdir(exist_ok=True)
             
@@ -78,7 +81,6 @@ async def main():
             safe_topic = safe_topic[:50].strip()
             
             output_file = output_dir / f"{safe_topic}.md"
-            final_report = final_state["final_report"]
             output_file.write_text(final_report, encoding='utf-8')
             
             print(f"\n[成功] 报告已保存至：{output_file}")

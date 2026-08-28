@@ -17,7 +17,7 @@ or multi-agent message bus.
 
 | Stage | Input | Output | Default behavior |
 |---|---|---|---|
-| Planner | question | `ResearchPlan` | one structured LLM call; objectives, queries, outline |
+| Planner | `query` | `ResearchPlan` | one structured LLM call; objectives, queries, outline |
 | Searcher | `ResearchPlan` | results, documents, source metadata | `deterministic_v2`; bounded search and extraction |
 | Synthesizer | filtered search results | findings | source-context synthesis; optional Evidence diagnostics stay off by default |
 | Writer | outline, findings, search results | report sections and Markdown report | serial section generation and citation formatting |
@@ -56,7 +56,11 @@ Start with these files:
 5. `src/agents/writer.py` — Writer public entry point.
 6. `src/search/executor.py` — deterministic web-research implementation.
 
-Phase 1 keeps the Agent implementation behind compatibility wrappers so
-existing State, Graph, and test injection behavior is unchanged. Physically
-extracting shared helpers and each class body is intentionally deferred to
-Phase 2, together with canonical State cleanup.
+Each Agent class now lives in its role module. `src/agents/_llm_support.py`
+owns only shared retry and accounting helpers; `src/state_compat.py` is the
+explicit canonical-first boundary for legacy State, cache, and checkpoint
+payloads. It is deliberately not a Pydantic validator or automatic sync layer.
+
+The current migration is intentionally incomplete for sources and findings:
+Writer continues to consume `search_results` and `key_findings` so source order,
+citation numbering, and optional Evidence sidecar behavior remain unchanged.

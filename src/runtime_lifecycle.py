@@ -17,6 +17,7 @@ from src.runtime_control import (
     create_execution_context,
 )
 from src.state import ResearchState
+from src.state_compat import canonical_report_text
 
 
 RUNTIME_OWNED_FIELDS = frozenset(
@@ -105,9 +106,9 @@ def classify_terminal_lifecycle(state: Mapping[str, Any]) -> dict[str, str]:
     The Graph routers already decide whether execution ends.  This helper only
     assigns a top-level runtime terminal state after that decision has finished.
     """
-    has_report = bool(state.get("final_report"))
+    has_report = bool(canonical_report_text(state))
     has_error = bool(state.get("error"))
-    is_failed_with_report = bool(state.get("final_report")) and (
+    is_failed_with_report = bool(canonical_report_text(state)) and (
         state.get("status") == "failed" or state.get("current_stage") == "failed"
     )
     execution_context = state.get("execution_context")
@@ -247,7 +248,7 @@ def filter_runtime_owned_input(additional_input: Mapping[str, Any]) -> dict[str,
 def is_successful_cache_payload(payload: Mapping[str, Any]) -> bool:
     """Return whether a cached payload represents a completed report result."""
     return (
-        bool(payload.get("final_report"))
+        bool(canonical_report_text(payload))
         and not payload.get("error")
         and payload.get("status") != "failed"
         and payload.get("current_stage") != "failed"

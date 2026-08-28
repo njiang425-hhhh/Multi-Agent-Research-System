@@ -125,9 +125,11 @@ experiments/
   archives/                 historical benchmark, showcase, and handoff records
 ```
 
-The `src/agents/` package is the stable public entry point. Its Phase 1
-compatibility implementation preserves the existing agent behavior while the
-package layout makes the four roles easy to discover.
+The `src/agents/` package is the stable public entry point: each role owns its
+own class body, while `src/state_compat.py` provides the explicit,
+canonical-first compatibility boundary for legacy State payloads. Writer still
+uses the established result and finding sequence to preserve citation numbering
+and optional Evidence-sidecar behavior.
 
 ## Validation
 

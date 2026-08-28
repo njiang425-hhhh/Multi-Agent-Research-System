@@ -9,6 +9,7 @@ from typing import Optional
 from src.config import config
 from src.graph import create_research_graph
 from src.runtime_lifecycle import apply_terminal_lifecycle, create_new_run_state, start_run
+from src.state_compat import canonical_report, canonical_report_text, canonical_usage
 from src.utils.exports import ReportExporter
 from src.utils.history import ResearchHistory
 from src.callbacks import (
@@ -531,7 +532,12 @@ MODEL_NAME=gemini-2.5-flash
         # 提取结果
         search_results = final_state.get('search_results', [])
         key_findings = final_state.get('key_findings', [])
-        report_sections = final_state.get('report_sections', [])
+        canonical_result_report = canonical_report(final_state)
+        report_sections = (
+            canonical_result_report.sections
+            if canonical_result_report is not None
+            else final_state.get('report_sections', [])
+        )
         credibility_scores = final_state.get('credibility_scores', [])
         
         # 统计指标
@@ -544,9 +550,10 @@ MODEL_NAME=gemini-2.5-flash
         medium_cred = sum(1 for s in credibility_scores if s.get('level') == 'medium')
         
         # LLM 指标
-        llm_calls = final_state.get('llm_calls', 0)
-        total_input = final_state.get('total_input_tokens', 0)
-        total_output = final_state.get('total_output_tokens', 0)
+        usage = canonical_usage(final_state)
+        llm_calls = usage.llm_calls
+        total_input = usage.input_tokens
+        total_output = usage.output_tokens
         total_tokens = total_input + total_output
         
         # 已用时间
@@ -598,8 +605,8 @@ MODEL_NAME=gemini-2.5-flash
         ).send()
         
         # 保存并显示报告
-        if final_state.get("final_report"):
-            report = final_state["final_report"]
+        report = canonical_report_text(final_state)
+        if report:
             
             # 保存文件
             output_dir = Path("outputs")

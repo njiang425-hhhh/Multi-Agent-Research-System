@@ -1,7 +1,7 @@
 """ResearchOS V1 状态契约。
 
 本模块同时保留 V0 旧字段和 V1 标准字段。V1 只声明数据契约，不负责
-新旧字段之间的自动同步；当前 Agent 和 Graph 仍可继续使用旧字段。
+新旧字段之间的自动同步；显式迁移仅由 ``src.state_compat`` 在边界执行。
 """
 
 from typing import Any, Dict, List, Literal, Optional
@@ -176,9 +176,10 @@ class QualityScore(BaseModel):
 class ResearchState(BaseModel):
     """ResearchOS V1 研究流程状态。
 
-    新字段是未来标准契约，旧字段保留用于兼容当前 Agent、Graph、CLI、
-    Web 和持久化逻辑。本阶段不通过 alias 或校验器自动同步新旧字段。
-    Legacy checkpoint 保持其已存储的字段继续运行；缺失的 V1 字段不自动回填。
+    新字段是标准契约，旧字段保留用于兼容当前 Agent、Graph、CLI、Web
+    和持久化逻辑。本阶段不通过 alias 或校验器自动同步新旧字段。
+    Legacy checkpoint 通过 ``state_compat`` 的显式、canonical-first hydration
+    继续运行；模型自身不回填或覆写已存储字段。
     """
 
     # State 契约版本
