@@ -2,8 +2,7 @@
 
 The default evaluator covers planning quality, research coverage, citation
 integrity, optional Evidence grounding, usage/latency, and the fixed showcase.
-Manual benchmarks, calibration, and governance/action policies live under
-``experiments/`` and retain compatibility import modules only.
+The package intentionally exposes only the stable portfolio evaluator surface.
 """
 
 from src.evaluation.dataset import FIXED_EVALUATION_DATASET

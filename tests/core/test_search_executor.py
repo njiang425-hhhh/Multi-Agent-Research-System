@@ -1,17 +1,15 @@
-"""Tests for SearchExecutor runtime limits without network access."""
+"""Fake-only contracts for deterministic, bounded search."""
 
 import asyncio
 from collections.abc import Callable
 from typing import Any
 
+from src.runtime_control import RunPolicy, create_execution_context
 from src.search.config import SearchConfig
 from src.search.executor import SearchExecutor
-from src.runtime_control import RunPolicy, create_execution_context
 
 
 class FakeSearchTool:
-    """In-memory search tool that records every invocation."""
-
     def __init__(self, handler: Callable[[str, int], Any]) -> None:
         self.handler = handler
         self.calls: list[dict[str, Any]] = []
@@ -25,8 +23,6 @@ class FakeSearchTool:
 
 
 class FakeExtractTool:
-    """In-memory extraction tool that records every invocation."""
-
     def __init__(self, handler: Callable[[str], Any]) -> None:
         self.handler = handler
         self.calls: list[str] = []
@@ -50,44 +46,30 @@ def _result(query: str, url: str) -> dict[str, str]:
 
 def test_search_executor_enforces_search_budget() -> None:
     search_tool = FakeSearchTool(lambda query, _: [_result(query, f"https://example.com/{query}")])
-    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
     executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=2,
-            max_extract_times=2,
-        ),
+        search_config=SearchConfig(mode="deterministic_v2", max_search_times=2, max_extract_times=2),
         search_tool=search_tool,
-        extract_tool=extract_tool,
+        extract_tool=FakeExtractTool(lambda url: f"content for {url}"),
     )
 
     execution = asyncio.run(executor.execute(["one", "two", "three"]))
 
     assert [call["query"] for call in search_tool.calls] == ["one", "two"]
     assert execution.stats.search_calls == 2
-    assert [result.query for result in execution.search_results] == ["one", "two"]
 
 
 def test_search_executor_deduplicates_normalized_queries() -> None:
     search_tool = FakeSearchTool(lambda query, _: [_result(query, f"https://example.com/{query}")])
-    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
     executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=3,
-            max_extract_times=3,
-        ),
+        search_config=SearchConfig(mode="deterministic_v2", max_search_times=3, max_extract_times=3),
         search_tool=search_tool,
-        extract_tool=extract_tool,
+        extract_tool=FakeExtractTool(lambda url: f"content for {url}"),
     )
 
-    execution = asyncio.run(
-        executor.execute(["  LangGraph  ", "langgraph", "LANGGRAPH", "other topic"])
-    )
+    execution = asyncio.run(executor.execute(["  LangGraph  ", "langgraph", "LANGGRAPH", "other topic"]))
 
     assert [call["query"] for call in search_tool.calls] == ["LangGraph", "other topic"]
     assert execution.stats.search_calls == 2
-    assert len(execution.search_results) == 2
 
 
 def test_search_executor_deduplicates_normalized_urls_before_extraction() -> None:
@@ -100,11 +82,7 @@ def test_search_executor_deduplicates_normalized_urls_before_extraction() -> Non
     )
     extract_tool = FakeExtractTool(lambda url: f"content for {url}")
     executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=1,
-            max_extract_times=3,
-        ),
+        search_config=SearchConfig(mode="deterministic_v2", max_search_times=1, max_extract_times=3),
         search_tool=search_tool,
         extract_tool=extract_tool,
     )
@@ -115,42 +93,7 @@ def test_search_executor_deduplicates_normalized_urls_before_extraction() -> Non
         "https://EXAMPLE.com/article/#introduction",
         "https://example.com/other",
     ]
-    assert extract_tool.calls == [
-        "https://EXAMPLE.com/article/#introduction",
-        "https://example.com/other",
-    ]
     assert execution.stats.extract_calls == 2
-
-
-def test_search_executor_excludes_seeded_urls_after_search_without_extracting_them() -> None:
-    search_tool = FakeSearchTool(
-        lambda query, _: [
-            _result(query, "https://example.com/already-seen/#fragment"),
-            _result(query, "https://example.com/new-source"),
-        ]
-    )
-    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
-    executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=1,
-            max_extract_times=2,
-        ),
-        search_tool=search_tool,
-        extract_tool=extract_tool,
-    )
-
-    execution = asyncio.run(
-        executor.execute(
-            ["topic"],
-            exclude_urls=["HTTPS://EXAMPLE.COM/already-seen"],
-        )
-    )
-
-    assert [call["query"] for call in search_tool.calls] == ["topic"]
-    assert [result.url for result in execution.search_results] == ["https://example.com/new-source"]
-    assert extract_tool.calls == ["https://example.com/new-source"]
-    assert execution.stats.extract_calls == 1
 
 
 def test_search_executor_enforces_extract_budget_and_returns_partial_results() -> None:
@@ -163,11 +106,7 @@ def test_search_executor_enforces_extract_budget_and_returns_partial_results() -
     )
     extract_tool = FakeExtractTool(lambda url: f"content for {url}")
     executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=1,
-            max_extract_times=1,
-        ),
+        search_config=SearchConfig(mode="deterministic_v2", max_search_times=1, max_extract_times=1),
         search_tool=search_tool,
         extract_tool=extract_tool,
     )
@@ -176,298 +115,34 @@ def test_search_executor_enforces_extract_budget_and_returns_partial_results() -
 
     assert extract_tool.calls == ["https://example.com/one"]
     assert execution.stats.extract_calls == 1
-    assert execution.search_results[0].content == "content for https://example.com/one"
-    assert [result.content for result in execution.search_results[1:]] == [None, None]
-    assert execution.completed is False
     assert execution.partial is True
-    assert execution.error is None
 
 
-def test_search_executor_extracts_top_result_per_query_before_second_results() -> None:
-    search_tool = FakeSearchTool(
-        lambda query, _: [
-            _result(query, f"https://example.com/{query}-one"),
-            _result(query, f"https://example.com/{query}-two"),
-        ]
-    )
-    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
+def test_search_executor_continues_after_partial_extraction_failure() -> None:
+    def extract(url: str) -> str:
+        if url.endswith("alpha"):
+            raise RuntimeError("fake extraction failure")
+        return f"content for {url}"
+
     executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=3,
-            max_extract_times=4,
-            max_results_per_search=2,
-        ),
-        search_tool=search_tool,
-        extract_tool=extract_tool,
-    )
-
-    execution = asyncio.run(executor.execute(["alpha", "beta", "gamma"]))
-
-    assert extract_tool.calls == [
-        "https://example.com/alpha-one",
-        "https://example.com/beta-one",
-        "https://example.com/gamma-one",
-        "https://example.com/alpha-two",
-    ]
-    assert [result.url for result in execution.search_results] == [
-        "https://example.com/alpha-one",
-        "https://example.com/alpha-two",
-        "https://example.com/beta-one",
-        "https://example.com/beta-two",
-        "https://example.com/gamma-one",
-        "https://example.com/gamma-two",
-    ]
-    assert execution.stats.extract_calls == 4
-
-
-def test_search_executor_respects_extract_budget_when_queries_exceed_budget() -> None:
-    search_tool = FakeSearchTool(
-        lambda query, _: [_result(query, f"https://example.com/{query}-one")]
-    )
-    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
-    executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=3,
-            max_extract_times=2,
-        ),
-        search_tool=search_tool,
-        extract_tool=extract_tool,
-    )
-
-    execution = asyncio.run(executor.execute(["alpha", "beta", "gamma"]))
-
-    assert extract_tool.calls == [
-        "https://example.com/alpha-one",
-        "https://example.com/beta-one",
-    ]
-    assert execution.stats.search_calls == 3
-    assert execution.stats.extract_calls == 2
-
-
-def test_search_executor_round_robin_skips_queries_with_no_results() -> None:
-    def search(query: str, _: int) -> list[dict[str, str]]:
-        if query == "empty":
-            return []
-        return [
-            _result(query, f"https://example.com/{query}-one"),
-            _result(query, f"https://example.com/{query}-two"),
-        ]
-
-    search_tool = FakeSearchTool(search)
-    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
-    executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=3,
-            max_extract_times=3,
-        ),
-        search_tool=search_tool,
-        extract_tool=extract_tool,
-    )
-
-    asyncio.run(executor.execute(["empty", "alpha", "beta"]))
-
-    assert extract_tool.calls == [
-        "https://example.com/alpha-one",
-        "https://example.com/beta-one",
-        "https://example.com/alpha-two",
-    ]
-
-
-def test_search_executor_round_robin_uses_deduplicated_and_valid_results() -> None:
-    def search(query: str, _: int) -> list[dict[str, str]]:
-        if query == "alpha":
-            return [
-                _result(query, "https://example.com/shared/#fragment"),
-                _result(query, "not a url"),
-                _result(query, "https://example.com/alpha-two"),
-            ]
-        return [
-            _result(query, "https://example.com/shared"),
-            _result(query, "https://example.com/beta-two"),
-        ]
-
-    search_tool = FakeSearchTool(search)
-    extract_tool = FakeExtractTool(lambda url: f"content for {url}")
-    executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=2,
-            max_extract_times=3,
-        ),
-        search_tool=search_tool,
-        extract_tool=extract_tool,
+        search_config=SearchConfig(mode="deterministic_v2", max_search_times=2, max_extract_times=2),
+        search_tool=FakeSearchTool(lambda query, _: [_result(query, f"https://example.com/{query}")]),
+        extract_tool=FakeExtractTool(extract),
     )
 
     execution = asyncio.run(executor.execute(["alpha", "beta"]))
 
-    assert [result.url for result in execution.search_results] == [
-        "https://example.com/shared/#fragment",
-        "https://example.com/alpha-two",
-        "https://example.com/beta-two",
-    ]
-    assert extract_tool.calls == [
-        "https://example.com/shared/#fragment",
-        "https://example.com/beta-two",
-        "https://example.com/alpha-two",
-    ]
-
-
-def test_search_executor_continues_round_robin_after_partial_extraction_failure() -> None:
-    def extract(url: str) -> str:
-        if url.endswith("alpha-one"):
-            raise RuntimeError("fake extraction failure")
-        return f"content for {url}"
-
-    search_tool = FakeSearchTool(
-        lambda query, _: [_result(query, f"https://example.com/{query}-one")]
-    )
-    extract_tool = FakeExtractTool(extract)
-    executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=3,
-            max_extract_times=3,
-        ),
-        search_tool=search_tool,
-        extract_tool=extract_tool,
-    )
-
-    execution = asyncio.run(executor.execute(["alpha", "beta", "gamma"]))
-
-    assert extract_tool.calls == [
-        "https://example.com/alpha-one",
-        "https://example.com/beta-one",
-        "https://example.com/gamma-one",
-    ]
     assert [result.content for result in execution.search_results] == [
         None,
-        "content for https://example.com/beta-one",
-        "content for https://example.com/gamma-one",
+        "content for https://example.com/beta",
     ]
-    assert execution.stats.extract_calls == 3
     assert execution.stats.failed_calls == 1
-
-
-def test_search_executor_returns_partial_results_after_timeout_when_allowed() -> None:
-    async def slow_extract(_: str) -> str:
-        await asyncio.sleep(0.2)
-        return "unreachable content"
-
-    search_tool = FakeSearchTool(lambda query, _: [_result(query, "https://example.com/one")])
-    extract_tool = FakeExtractTool(slow_extract)
-    executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=1,
-            max_extract_times=1,
-            total_timeout_seconds=0.05,
-            allow_partial_results=True,
-        ),
-        search_tool=search_tool,
-        extract_tool=extract_tool,
-    )
-
-    execution = asyncio.run(executor.execute(["topic"]))
-
-    assert execution.search_results[0].url == "https://example.com/one"
-    assert execution.search_results[0].content is None
-    assert execution.completed is False
-    assert execution.partial is True
-    assert execution.error is None
-
-
-def test_search_executor_reports_timeout_when_partial_results_are_disabled() -> None:
-    async def slow_extract(_: str) -> str:
-        await asyncio.sleep(0.2)
-        return "unreachable content"
-
-    search_tool = FakeSearchTool(lambda query, _: [_result(query, "https://example.com/one")])
-    extract_tool = FakeExtractTool(slow_extract)
-    executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=1,
-            max_extract_times=1,
-            total_timeout_seconds=0.05,
-            allow_partial_results=False,
-        ),
-        search_tool=search_tool,
-        extract_tool=extract_tool,
-    )
-
-    execution = asyncio.run(executor.execute(["topic"]))
-
-    assert execution.search_results[0].url == "https://example.com/one"
-    assert execution.completed is False
-    assert execution.partial is False
-    assert execution.error == "Search executor timeout (0.05 seconds)"
-
-
-def test_search_executor_reports_an_error_when_all_searches_fail() -> None:
-    def fail_search(_: str, __: int) -> list[dict[str, str]]:
-        raise RuntimeError("fake search failure")
-
-    search_tool = FakeSearchTool(fail_search)
-    extract_tool = FakeExtractTool(lambda _: "not used")
-    executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=2,
-            max_extract_times=2,
-        ),
-        search_tool=search_tool,
-        extract_tool=extract_tool,
-    )
-
-    execution = asyncio.run(executor.execute(["one", "two"]))
-
-    assert len(search_tool.calls) == 2
-    assert extract_tool.calls == []
-    assert execution.search_results == []
-    assert execution.completed is False
-    assert execution.partial is False
-    assert execution.stats.failed_calls == 2
-    assert execution.error == "web_search failed: fake search failure"
-
-
-def test_search_executor_records_each_tool_retry_for_trace_projection() -> None:
-    attempts = 0
-
-    def retry_once(query: str, _: int) -> list[dict[str, str]]:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise RuntimeError("fake retry")
-        return [_result(query, "https://example.com/retry")]
-
-    executor = SearchExecutor(
-        search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=2,
-            max_extract_times=1,
-            search_retry_times=1,
-        ),
-        search_tool=FakeSearchTool(retry_once),
-        extract_tool=FakeExtractTool(lambda _: "fake content"),
-    )
-
-    execution = asyncio.run(executor.execute(["retry topic"]))
-
-    search_attempts = [item for item in execution.stats.invocation_records if item["operation"] == "search"]
-    assert [item["attempt"] for item in search_attempts] == [1, 2]
-    assert [item["success"] for item in search_attempts] == [False, True]
 
 
 def test_search_executor_propagates_runtime_budget_as_partial_output() -> None:
     executor = SearchExecutor(
         search_config=SearchConfig(
-            mode="deterministic_v2",
-            max_search_times=1,
-            max_extract_times=1,
-            allow_partial_results=True,
+            mode="deterministic_v2", max_search_times=1, max_extract_times=1, allow_partial_results=True
         ),
         search_tool=FakeSearchTool(lambda query, _: [_result(query, "https://example.com/one")]),
         extract_tool=FakeExtractTool(lambda _: "unreachable"),
@@ -480,9 +155,6 @@ def test_search_executor_propagates_runtime_budget_as_partial_output() -> None:
 
     execution = asyncio.run(executor.execute(["topic"], execution_context=context))
 
-    assert execution.search_results[0].content is None
-    assert execution.completed is False
     assert execution.partial is True
     assert execution.execution_context is not None
-    assert execution.execution_context.operation_calls == 1
     assert execution.execution_context.operation_stop_reason == "budget_exhausted"

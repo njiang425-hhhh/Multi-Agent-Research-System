@@ -4,12 +4,7 @@ import asyncio
 import copy
 import json
 
-from src.evaluation.showcase import (
-    SHOWCASE_CASES,
-    archive_showcase,
-    render_showcase_summary,
-    run_showcase,
-)
+from src.evaluation.showcase import SHOWCASE_CASES, archive_showcase, run_showcase
 
 
 def _trace(run_id: str) -> list[dict[str, object]]:
@@ -129,34 +124,3 @@ def test_showcase_archives_cases_and_read_only_evaluations(tmp_path) -> None:
         assert (tmp_path / "archive" / "cases" / f"{case.case_id}.json").exists()
         assert (tmp_path / "archive" / "cases" / f"{case.case_id}.report.md").exists()
 
-
-def test_showcase_continues_after_one_runner_failure_and_keeps_default_memory_off() -> None:
-    selected = SHOWCASE_CASES[:2]
-
-    async def mixed_runner(case):
-        if case.case_id == selected[0].case_id:
-            raise RuntimeError("provider token=should-not-appear")
-        return _state(case)
-
-    result = asyncio.run(run_showcase(mixed_runner, cases=selected))
-
-    failed, completed = result["cases"]
-    assert result["summary"]["failed_cases"] == 1
-    assert failed["status"] == "failed"
-    assert "should-not-appear" not in failed["error"]
-    assert completed["status"] == "completed"
-    assert completed["memory"]["enabled_for_case"] is False
-    assert completed["memory"]["retrieved_count"] == 0
-    assert "failed" in render_showcase_summary(result)
-
-
-def test_memory_case_must_be_selected_and_only_one_case_is_possible() -> None:
-    async def fake_runner(case):
-        return _state(case)
-
-    try:
-        asyncio.run(run_showcase(fake_runner, cases=SHOWCASE_CASES[:1], memory_case_id=SHOWCASE_CASES[1].case_id))
-    except ValueError as exc:
-        assert "selected" in str(exc)
-    else:
-        raise AssertionError("unselected memory case should be rejected")

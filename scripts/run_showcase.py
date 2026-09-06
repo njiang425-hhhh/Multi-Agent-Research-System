@@ -1,4 +1,4 @@
-"""Manual P16 DeepSeek + Tavily showcase entry point; never used by CI."""
+"""Manual DeepSeek + Tavily showcase entry point; never used by CI."""
 
 from __future__ import annotations
 
@@ -22,11 +22,11 @@ from src.evaluation.showcase import (
 
 def _arguments() -> argparse.Namespace:
     case_ids = [item.case_id for item in SHOWCASE_CASES]
-    parser = argparse.ArgumentParser(description="Run the manual P16 DeepSeek + Tavily showcase.")
+    parser = argparse.ArgumentParser(description="Run the manual DeepSeek + Tavily showcase.")
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=Path("experiments/archives/showcase"),
+        default=Path("artifacts/showcase"),
         help="Parent directory for one timestamped showcase archive.",
     )
     parser.add_argument(

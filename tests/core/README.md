@@ -12,6 +12,7 @@
 | 确定性 SearchExecutor 与来源 Documents | `test_search_executor.py`、`test_searcher_documents.py` |
 | 来源关联 Findings | `test_synthesizer_findings.py` |
 | Writer 报告生成 | `test_writer_report_migration.py` |
+| 搜索统计、SQLite checkpoint/resume 与运行时 deadline | `test_search_usage_trace_consistency.py`、`test_runtime_persistence.py` |
+| Evidence sidecar 与固定 fake showcase | `test_evidence_sidecar.py`、`test_showcase.py` |
 
-其余顶层测试覆盖 runtime compatibility、provider、可选 Memory/Evidence sidecar 与其他非核心
-契约。冻结的 Governance 测试位于 `tests/experiments/governance/`；默认 CI 始终为 fake-only。
+该目录是仓库唯一的默认测试入口；所有测试均为 fake-only，CI 不调用真实 provider。
