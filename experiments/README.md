@@ -1,17 +1,17 @@
-# Experiments and historical material
+# 实验与归档材料
 
-This directory keeps work that is useful for engineering discussion but is not
-part of the default ResearchOS portfolio path.
+此目录中的任何内容都不会改变默认的
+Planner → Searcher → Synthesizer → Writer 工作流。
 
-| Area | Location | Status |
+| 范围 | 位置 | 状态 |
 |---|---|---|
-| Local lexical memory demo | `memory/` | Optional, default off |
-| Writer serial vs bounded benchmark | `writer_performance/` | Experimental |
-| Real-workload and repeatability runners | `benchmarks/` | Manual only |
-| Governance/action exploration | `governance/` | Frozen, not wired to Graph |
-| Prior showcase/benchmark outputs and handoff history | `archives/` | Historical record |
+| Governance、action authorization/execution、human review | `governance/` | 冻结的契约探索 |
+| Calibration、Evidence-value、real-workload、repeatability evaluator | `evaluation/` | 手动/研究性评估 |
+| 使用真实 provider 的 benchmark 入口 | `benchmarks/` | 仅手动运行；不进入 CI |
+| 本地 Memory demo | `memory/` | 可选演示 |
+| Writer performance study | `writer_performance/` | 实验性 |
+| 历史结果记录 | `archives/` | 只读归档 |
+| Legacy 说明 | `legacy/` | 兼容历史 |
 
-The governance implementation remains under `src/` in Phase 1 because its
-modules import each other and are directly covered by tests. Moving it would
-require compatibility shims and broader package changes, so that work is
-explicitly deferred to Phase 2 rather than forced into this low-risk pass.
+原 `src` import path 的短小模块保留了旧脚本和契约测试需要的直接导入。它们转发到本目录
+中的实现，而不是第二份真相。

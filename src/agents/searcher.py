@@ -2,33 +2,22 @@
 
 from __future__ import annotations
 
-import asyncio
 from copy import copy
-import json
 import logging
-import time
 from typing import Any, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
 
 from src.agents._llm_support import _usage_from_totals
-from src.callbacks import (
-    emit_error,
-    emit_extraction_complete,
-    emit_search_results,
-    emit_search_start,
-)
+from src.callbacks import emit_error, emit_extraction_complete, emit_search_results, emit_search_start
 from src.config import config
 from src.evidence.adapters import normalize_web_url, scored_search_results_to_documents
-from src.exceptions import SearchError
 from src.llm.factory import get_llm
-from src.llm_tracker import estimate_tokens
 from src.memory import ResearchMemoryStore, build_search_memory_hints
 from src.memory.retrieval import (
     default_memory_store as _default_memory_store,
     retrieve_memory_items_with_diagnostics as _retrieve_memory_items_with_diagnostics,
 )
-from src.prompts import SEARCHER_SYSTEM_PROMPT, SEARCHER_USER_TEMPLATE
 from src.runtime_lifecycle import failed_lifecycle_patch
 from src.search.config import SearchConfig
 from src.search.coverage import SearchCoverage, measure_search_coverage
@@ -46,24 +35,16 @@ from src.utils.tools import get_research_tools
 
 logger = logging.getLogger(__name__)
 
+# Retained as a public import constant for explicit legacy configuration only.
 SEARCHER_AGENT_RECURSION_LIMIT = 12
-SEARCHER_AGENT_TIMEOUT_SECONDS = 90
 SEARCHER_ADAPTIVE_MAX_ROUNDS = 1
 SEARCHER_ADAPTIVE_TIMEOUT_SECONDS = 30.0
 SEARCHER_ADAPTIVE_MAX_SEARCH_CALLS = 1
 SEARCHER_ADAPTIVE_MAX_EXTRACT_CALLS = 1
 
 
-def _create_agent(*args, **kwargs):
-    """Resolve the public injection seam at call time for existing tests."""
-
-    from src import agents
-
-    return agents.create_agent(*args, **kwargs)
-
-
 class ResearchSearcher:
-    """负责执行研究搜索的自主代理。"""
+    """Execute the supported deterministic, bounded research search path."""
 
     def __init__(
         self,
@@ -209,191 +190,17 @@ class ResearchSearcher:
         return merged, appended, content_upgrades
 
     async def search(self, state: ResearchState) -> Dict[str, Any]:
-        """使用工具自主执行研究搜索。
-
-        返回将由 LangGraph 合并到状态中的搜索结果字典。
-        """
+        """Return canonical deterministic results or dispatch explicit legacy mode."""
         plan = _research_plan(state)
         if not plan:
             await emit_error("没有可用的研究计划")
             return {"error": "没有可用的研究计划", **failed_lifecycle_patch()}
-
         if self.search_config.mode == "deterministic_v2":
             return await self._search_with_executor(state)
 
-        logger.info(f"自主代理开始研究：已规划 {len(plan.search_queries)} 个查询")
+        from src.agents.compat.autonomous_searcher import run_legacy_autonomous_search
 
-        total_queries = len(plan.search_queries)
-        for i, query in enumerate(plan.search_queries, 1):
-            await emit_search_start(query.query, i, total_queries)
-
-        max_searches = min(config.max_search_queries, 3)
-        max_results_per_search = min(config.max_search_results_per_query, 3)
-        expected_total_results = max_searches * max_results_per_search
-        max_extractions = min(max_searches + 1, 4)
-        target_sources = min(expected_total_results, max_extractions)
-
-        system_prompt = SEARCHER_SYSTEM_PROMPT.format(
-            max_searches=max_searches,
-            max_results_per_search=max_results_per_search,
-            max_extractions=max_extractions,
-            expected_total_results=target_sources
-        )
-
-        agent_graph = _create_agent(
-            self.llm,
-            self.tools,
-            system_prompt=system_prompt
-        )
-
-        for attempt in range(self.max_retries):
-            try:
-                start_time = time.time()
-
-                objectives_text = "\n".join(f"- {obj}" for obj in plan.objectives)
-                queries_text = "\n".join(
-                    f"- {q.query} (Purpose: {q.purpose})"
-                    for q in plan.search_queries
-                )
-
-                input_message = SEARCHER_USER_TEMPLATE.format(
-                    topic=_research_query(state),
-                    objectives=objectives_text,
-                    queries=queries_text,
-                    min_sources=target_sources,
-                    max_searches=max_searches,
-                    max_extractions=max_extractions
-                )
-
-                input_tokens = estimate_tokens(input_message)
-
-                try:
-                    result = await asyncio.wait_for(
-                        agent_graph.ainvoke(
-                            {
-                                "messages": [{"role": "user", "content": input_message}]
-                            },
-                            config={"recursion_limit": SEARCHER_AGENT_RECURSION_LIMIT},
-                        ),
-                        timeout=SEARCHER_AGENT_TIMEOUT_SECONDS,
-                    )
-                except asyncio.TimeoutError as exc:
-                    raise SearchError(
-                        f"搜索代理执行超时（{SEARCHER_AGENT_TIMEOUT_SECONDS} 秒）",
-                        details=(
-                            "Searcher Agent 超过单次执行时间限制；"
-                            f"recursion_limit={SEARCHER_AGENT_RECURSION_LIMIT}"
-                        ),
-                    ) from exc
-                except Exception as exc:
-                    if isinstance(exc, SearchError):
-                        raise
-                    raise SearchError(
-                        "搜索代理执行失败",
-                        details=str(exc),
-                    ) from exc
-
-                duration = time.time() - start_time
-
-                messages = result.get('messages', [])
-                output_text = ""
-                if messages:
-                    output_text = str(messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1]))
-
-                output_tokens = estimate_tokens(output_text)
-
-                search_results = self._extract_results_from_messages(messages)
-
-                logger.info(f"自主代理收集了 {len(search_results)} 个结果")
-
-                total_extracted_chars = sum(
-                    len(r.content) if r.content else 0
-                    for r in search_results
-                )
-                extracted_count = sum(1 for r in search_results if r.content)
-
-                await emit_extraction_complete(extracted_count, total_extracted_chars)
-
-                if not search_results:
-                    await emit_error("代理没有收集到任何搜索结果")
-                    raise SearchError("代理没有收集到任何搜索结果")
-
-                scored_results = self.credibility_scorer.score_search_results(search_results)
-
-                filtered_scored = [
-                    item for item in scored_results
-                    if item['credibility']['score'] >= config.min_credibility_score
-                ]
-
-                credibility_scores = [item['credibility'] for item in filtered_scored]
-                sorted_results = [item['result'] for item in filtered_scored]
-                documents = scored_search_results_to_documents(
-                    (item["result"], item["credibility"])
-                    for item in filtered_scored
-                )
-
-                logger.info(f"已过滤 {len(search_results)} -> {len(sorted_results)} 个结果（最低可信度={config.min_credibility_score}）")
-
-                for q in plan.search_queries:
-                    q.completed = True
-
-                call_detail = {
-                    'agent': 'ResearchSearcher',
-                    'operation': 'autonomous_search',
-                    'model': config.model_name,
-                    'input_tokens': input_tokens,
-                    'output_tokens': output_tokens,
-                    'duration': round(duration, 2),
-                    'results_count': len(sorted_results),
-                    'original_results_count': len(search_results),
-                    'min_credibility_score': config.min_credibility_score,
-                    'attempt': attempt + 1
-                }
-
-                return {
-                    "documents": documents,
-                    "current_stage": "synthesizing",
-                    "iteration": canonical_iteration(state) + 1,
-                    "llm_call_details": state.llm_call_details + [call_detail],
-                    "usage": _usage_from_totals(
-                        state,
-                        llm_calls=canonical_usage(state).llm_calls + 1,
-                        input_tokens=canonical_usage(state).input_tokens + input_tokens,
-                        output_tokens=canonical_usage(state).output_tokens + output_tokens,
-                    ),
-                }
-
-            except SearchError as e:
-                logger.warning(f"第 {attempt + 1} 次搜索尝试失败：{e}")
-                if attempt == self.max_retries - 1:
-                    logger.error(f"经过 {self.max_retries} 次尝试后搜索仍失败")
-                    await emit_error(f"搜索失败：{e}")
-                    return {
-                        "error": f"搜索失败：{e}",
-                        "iteration": canonical_iteration(state) + 1,
-                        **failed_lifecycle_patch(),
-                    }
-                else:
-                    await asyncio.sleep(2 ** attempt)
-            except Exception as e:
-                search_error = SearchError("搜索阶段执行失败", details=str(e))
-                logger.warning(f"第 {attempt + 1} 次搜索尝试失败：{search_error}")
-                if attempt == self.max_retries - 1:
-                    logger.error(f"经过 {self.max_retries} 次尝试后搜索仍失败")
-                    await emit_error(f"搜索失败：{search_error}")
-                    return {
-                        "error": f"搜索失败：{search_error}",
-                        "iteration": canonical_iteration(state) + 1,
-                        **failed_lifecycle_patch(),
-                    }
-                else:
-                    await asyncio.sleep(2 ** attempt)
-
-        return {
-            "error": "搜索失败：已超过最大重试次数",
-            "iteration": canonical_iteration(state) + 1,
-            **failed_lifecycle_patch(),
-        }
+        return await run_legacy_autonomous_search(self, state)
 
     async def _search_with_executor(self, state: ResearchState) -> Dict[str, Any]:
         """Run deterministic_v2 and return canonical state updates."""
@@ -649,45 +456,12 @@ class ResearchSearcher:
             result_patch["execution_context"] = latest_execution_context
         return result_patch
 
-    def _extract_results_from_messages(self, messages: list) -> List[SearchResult]:
-        """从代理消息中提取搜索结果。"""
-        search_results = []
+    @staticmethod
+    def _extract_results_from_messages(messages: list) -> List[SearchResult]:
+        """Compatibility parser for callers of the historical Searcher method."""
+        from src.agents.compat.autonomous_searcher import extract_results_from_messages
 
-        for msg in messages:
-            if hasattr(msg, 'name') and msg.name == 'web_search':
-                try:
-                    content = msg.content
-                    if isinstance(content, str):
-                        tool_results = json.loads(content)
-                    else:
-                        tool_results = content
-
-                    if isinstance(tool_results, list):
-                        for item in tool_results:
-                            if isinstance(item, dict):
-                                search_results.append(SearchResult(
-                                    query=item.get('query', ''),
-                                    title=item.get('title', ''),
-                                    url=item.get('url', ''),
-                                    snippet=item.get('snippet', ''),
-                                    content=None
-                                ))
-                except Exception as e:
-                    logger.warning(f"解析工具结果出错：{e}")
-
-            if hasattr(msg, 'name') and msg.name == 'extract_webpage_content':
-                try:
-                    content = msg.content
-                    if search_results and content:
-                        for sr in reversed(search_results):
-                            if not sr.content:
-                                sr.content = content
-                                break
-                except Exception as e:
-                    logger.warning(f"更新内容出错：{e}")
-
-        return search_results
-
+        return extract_results_from_messages(messages)
 
 # =============================================================================
 # 研究综合代理

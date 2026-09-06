@@ -57,33 +57,33 @@ def _state(case, *, memory: bool = False) -> dict[str, object]:
         }
     return {
         "query": case.query,
-        "research_topic": case.query,
         "run_id": run_id,
         "status": "completed",
         "current_stage": "complete",
         "terminal_reason": "completed",
         "research_plan": plan,
-        "plan": plan,
-        "search_results": [
-            {"query": item["query"], "title": facets, "url": url, "snippet": facets, "content": facets}
-            for item, url in zip(plan["search_queries"], (first_url, second_url, first_url))
-        ],
         "documents": [
             {"document_id": "doc-one", "title": facets, "uri": first_url, "content": facets, "metadata": {"search_query": plan["search_queries"][0]["query"]}},
             {"document_id": "doc-two", "title": facets, "uri": second_url, "content": facets, "metadata": {"search_query": plan["search_queries"][1]["query"]}},
         ],
-        "findings": [{"finding_id": "finding-1", "statement": "Observed finding"}],
-        "key_findings": ["Observed finding"],
+        "findings": [{"finding_id": "finding-1", "statement": "Observed finding", "source_document_ids": ["doc-one"]}],
         "evidence": [
             {"evidence_id": "evidence-one", "document_id": "doc-one", "source_url": first_url, "source_quote": "quoted support", "status": "grounded"},
             {"evidence_id": "evidence-two", "document_id": "doc-two", "source_url": second_url, "source_quote": "quoted support", "status": "grounded"},
         ],
-        "report_sections": [{"title": "Evidence", "content": "Observed support [1] [2]", "sources": [first_url, second_url]}],
-        "report": {"citations": [first_url, second_url]},
-        "final_report": "# Showcase report\n\n## Evidence\n\nObserved support [1] [2]. " + ("Observed support. " * 12),
+        "report": {
+            "title": "Showcase report",
+            "sections": [{"title": "Evidence", "content": "Observed support [1] [2]", "sources": [first_url, second_url]}],
+            "content": "# Showcase report\n\n## Evidence\n\nObserved support [1] [2]. " + ("Observed support. " * 12),
+            "citations": [first_url, second_url],
+            "status": "completed",
+        },
         "agent_trace": _trace(run_id),
-        "usage": {"llm_calls": 3, "tool_calls": 2, "input_tokens": 10, "output_tokens": 8, "total_tokens": 18, "latency_seconds": 0.5},
-        "search_diagnostics": [{"kind": "adaptive_search", "rounds_attempted": 1, "outcome": "completed", "supplementary_query": "extra source", "primary_coverage": {"result_query_coverage": 0.5}, "post_coverage": {"result_query_coverage": 1.0}}],
+        "usage": {"llm_calls": 3, "tool_calls": 5, "input_tokens": 10, "output_tokens": 8, "total_tokens": 18, "latency_seconds": 0.5},
+        "search_diagnostics": [
+            {"kind": "search_execution", "search_calls": 2, "extract_calls": 3},
+            {"kind": "adaptive_search", "rounds_attempted": 1, "outcome": "completed", "supplementary_query": "extra source", "primary_coverage": {"result_query_coverage": 0.5}, "post_coverage": {"result_query_coverage": 1.0}},
+        ],
         "memory_diagnostics": memory_diagnostics,
     }
 
@@ -113,6 +113,7 @@ def test_showcase_archives_cases_and_read_only_evaluations(tmp_path) -> None:
     assert states == original
     first = result["cases"][0]
     assert first["adaptive"]["supplementary_query"] == "extra source"
+    assert first["search_statistics"] == {"available": True, "search_calls": 2, "extract_calls": 3}
     assert first["memory"]["retrieved_memory_ids"] == ["memory-1"]
     assert first["core_metrics"]["source_coverage"] == "passed"
     assert first["core_metrics"]["citation_integrity"] == "passed"

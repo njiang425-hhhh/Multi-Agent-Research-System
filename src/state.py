@@ -1,7 +1,7 @@
-"""ResearchOS V1 状态契约。
+"""Flat canonical research-state contract with explicit legacy inputs.
 
-本模块同时保留 V0 旧字段和 V1 标准字段。V1 只声明数据契约，不负责
-新旧字段之间的自动同步；显式迁移仅由 ``src.state_compat`` 在边界执行。
+The model never synchronizes two business representations itself. Legacy
+hydration/projection is an explicit ``src.state_compat`` boundary operation.
 """
 
 from typing import Any, Dict, List, Literal, Optional
@@ -131,12 +131,12 @@ class MemoryItem(BaseModel):
 
 
 class ResearchState(BaseModel):
-    """ResearchOS V1 研究流程状态。
+    """One flat State for canonical data, runtime facts, and optional sidecars.
 
-    新字段是标准契约，旧字段保留用于兼容当前 Agent、Graph、CLI、Web
-    和持久化逻辑。本阶段不通过 alias 或校验器自动同步新旧字段。
-    Legacy checkpoint 通过 ``state_compat`` 的显式、canonical-first hydration
-    继续运行；模型自身不回填或覆写已存储字段。
+    The canonical business contract is ``query → research_plan → documents →
+    findings → report``. Legacy fields remain only for old inputs, checkpoints,
+    and cache payloads; ``state_compat`` hydrates them explicitly and canonical
+    values win whenever both are present.
     """
 
     # State 契约版本

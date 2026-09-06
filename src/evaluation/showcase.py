@@ -35,6 +35,7 @@ from src.evaluation.research_coverage import (
     evaluate_research_coverage,
 )
 from src.state import Document, ResearchPlan, SearchResult
+from src.state_compat import canonical_report, canonical_report_text
 
 
 SHOWCASE_VERSION = "p16.showcase.v1"
@@ -205,8 +206,17 @@ def _models(values: Any, model: type[SearchResult] | type[Document]) -> list[Any
     return items
 
 
-def _executed_queries(state: Any, results: Sequence[SearchResult]) -> list[str]:
+def _executed_queries(
+    state: Any,
+    results: Sequence[SearchResult],
+    documents: Sequence[Document],
+) -> list[str]:
     observed = [result.query for result in results if result.query.strip()]
+    if not observed:
+        observed.extend(
+            str(document.metadata.get("search_query") or "").strip()
+            for document in documents
+        )
     if observed:
         return list(dict.fromkeys(observed))
     diagnostics = _read(state, "search_diagnostics", ())
@@ -216,6 +226,23 @@ def _executed_queries(state: Any, results: Sequence[SearchResult]) -> list[str]:
             if isinstance(query, str) and query.strip():
                 observed.append(query)
     return list(dict.fromkeys(observed))
+
+
+def _search_statistics(state: Any) -> dict[str, int | bool]:
+    """Read SearchExecutor's existing authoritative count projection."""
+
+    diagnostics = _read(state, "search_diagnostics", ())
+    diagnostics = diagnostics if isinstance(diagnostics, (list, tuple)) else ()
+    entries = [
+        item
+        for item in diagnostics
+        if isinstance(item, Mapping) and item.get("kind") == "search_execution"
+    ]
+    return {
+        "available": bool(entries),
+        "search_calls": sum(int(item.get("search_calls", 0) or 0) for item in entries),
+        "extract_calls": sum(int(item.get("extract_calls", 0) or 0) for item in entries),
+    }
 
 
 def _metric_status(result: Any, name: str) -> str:
@@ -301,7 +328,7 @@ def _case_evaluations(case: ShowcaseCase, state: Any) -> dict[str, Any]:
         {
             case.case_id: ResearchCoverageObservation(
                 plan=plan,
-                executed_queries=_executed_queries(observed_state, results),
+                executed_queries=_executed_queries(observed_state, results, documents),
                 search_results=results,
                 documents=documents,
             )
@@ -338,15 +365,16 @@ def _case_record(case: ShowcaseCase, state: Any, wall_seconds: float, memory_ena
         "error": _redact_error(_read(state_payload, "error", None)),
         "wall_time_seconds": round(max(wall_seconds, 0.0), 6),
         "research_plan": _jsonable(_coerce_plan(state_payload)),
-        "executed_search_queries": _executed_queries(state_payload, results),
+        "executed_search_queries": _executed_queries(state_payload, results, documents),
         "search_results": _jsonable(results),
         "documents": _jsonable(documents),
         "adaptive": _adaptive_summary(state_payload),
+        "search_statistics": _search_statistics(state_payload),
         "memory": _memory_summary(state_payload, memory_enabled),
         "findings": _jsonable(_read(state_payload, "findings", ())),
         "key_findings": _jsonable(_read(state_payload, "key_findings", ())),
-        "final_report": _read(state_payload, "final_report", ""),
-        "citations": _jsonable(_read(_read(state_payload, "report", {}), "citations", ())),
+        "final_report": canonical_report_text(state_payload) or "",
+        "citations": _jsonable((canonical_report(state_payload).citations if canonical_report(state_payload) else ())),
         "trace": _jsonable(_read(state_payload, "agent_trace", ())),
         "usage": _jsonable(_read(state_payload, "usage", {})),
         "evaluations": evaluations,
@@ -455,23 +483,21 @@ def render_showcase_summary(result: Mapping[str, Any]) -> str:
         f"- Cases: `{summary['total_cases']}`; completed: `{summary['completed_cases']}`; failed: `{summary['failed_cases']}`",
         f"- Adaptive triggered: `{summary['adaptive_triggered_cases']}`; memory enabled cases: `{summary['memory_enabled_cases']}`",
         "",
-        "| Case | Category | Status | Wall s | Adaptive | Memory retrieved | Source | Citation integrity | Evidence grounding | Report |",
-        "|---|---|---|---:|---|---:|---|---|---|---|",
+        "| Case | Status | Search | Extract | LLM | Wall s | Citation integrity | Evidence grounding |",
+        "|---|---|---:|---:|---:|---:|---|---|",
     ]
     for item in result["cases"]:
         metrics = item["core_metrics"]
         lines.append(
-            "| {case} | {category} | {status} | {wall:.3f} | {adaptive} | {memory} | {source} | {citation} | {grounding} | {report} |".format(
+            "| {case} | {status} | {search} | {extract} | {llm} | {wall:.3f} | {citation} | {grounding} |".format(
                 case=item["case"]["case_id"],
-                category=item["case"]["category"],
                 status=item["status"],
+                search=item["search_statistics"]["search_calls"] if item["search_statistics"]["available"] else "n/a",
+                extract=item["search_statistics"]["extract_calls"] if item["search_statistics"]["available"] else "n/a",
+                llm=item["usage"].get("llm_calls", "n/a"),
                 wall=item["wall_time_seconds"],
-                adaptive=item["adaptive"]["outcome"],
-                memory=item["memory"]["retrieved_count"],
-                source=metrics["source_coverage"],
                 citation=metrics["citation_integrity"],
                 grounding=metrics["evidence_grounding"],
-                report=metrics["report_completeness"],
             )
         )
     lines.extend(

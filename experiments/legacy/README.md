@@ -1,11 +1,7 @@
-# Legacy Agent paths
+# Legacy 兼容路径
 
-The core portfolio path uses `SEARCHER_MODE=deterministic_v2` and a serial
-Writer. The legacy autonomous Searcher and bounded Writer scheduling remain in
-the Phase 1 compatibility implementation so existing callers and tests retain
-their behavior.
+受支持的作品集路径为 `SEARCHER_MODE=deterministic_v2` 与串行 Writer section。历史
+autonomous Searcher 已隔离到 `src/agents/compat/autonomous_searcher.py`，仅在显式请求
+`SearchConfig(mode="legacy_agent")` 时启用。
 
-They are intentionally not part of the README or architecture reading path.
-Physically separating their implementation from shared Agent helpers is a
-Phase 2 task because it currently touches public imports, runtime injection,
-and direct test seams.
+它仅为避免破坏旧调用方而保留；不属于默认工作流评估范围，也不应被作为推荐的 Agent 架构。

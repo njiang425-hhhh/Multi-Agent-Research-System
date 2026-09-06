@@ -1,151 +1,137 @@
-# ResearchOS
+# 多智能体研究系统
 
-ResearchOS is a compact, source-aware research agent. It turns one research
-question into a structured Markdown report through a fixed four-stage flow:
-
-```text
-Query → ResearchPlan → Documents → Findings → Report
-```
-
-The project is designed as an Agent-development portfolio: the important parts
-are a clear planning contract, deterministic and bounded web research,
-traceable sources, and an inspectable end-to-end workflow. It is not presented
-as a production Agent Platform.
-
-## What it demonstrates
-
-- **Planner** — one structured LLM call produces objectives, bounded search
-  queries, and a report outline.
-- **Searcher** — `SearchExecutor` runs deterministic search, URL de-duplication,
-  bounded extraction, credibility filtering, and source-document projection.
-- **Bounded adaptive follow-up** — when planned-query coverage is incomplete,
-  Searcher may run at most one supplementary search and extraction. It never
-  replans, loops, or changes the Graph.
-- **Synthesizer** — turns canonical Documents into source-linked Findings.
-- **Writer** — follows the planned outline and produces one canonical cited Report.
-- **Observability and evaluation** — trace, usage accounting, and read-only
-  evaluation make a run inspectable without changing its route.
-
-## Architecture
+一个轻量、可追溯的 Research Agent 作品集项目。它通过固定、可检查的工作流，
+将一个问题转化为带引用的 Markdown 研究报告；它不是开放式 Agent 平台。
 
 ```text
-User question
-    │
-    ▼
-Planner ── ResearchPlan(objectives, queries, outline)
-    │
-    ▼
-Searcher ── deterministic search + extract + Documents (unique, credibility-stable)
-    │           └─ optional one-round adaptive follow-up
-    ▼
-Synthesizer ── Findings(statement + source_document_ids)
-    │
-    ▼
-Writer ── Report(content + ordered citations)
+query → research_plan → documents → findings → report
 ```
 
-The LangGraph topology remains linear. Search adaptation stays inside the
-Searcher implementation rather than adding a Reflection, Supervisor, or Graph
-branch. See [ARCHITECTURE.md](ARCHITECTURE.md) for inputs, outputs, and the
-default execution path.
+## 项目是什么
 
-## Quick start
+本项目展示可靠研究工作流所需的工程取舍：有界检索、canonical 来源对象、来源关联的
+论断、稳定引用、可安全重放的缓存与离线评估。核心路径足够小，可以在一次阅读中
+解释清楚；同时通过 fake-only 回归套件保障迭代安全。
 
-Requirements: Python 3.11+, one LLM provider, and one search provider. The
-included example configuration uses DeepSeek and Tavily.
+## 架构
+
+```text
+CLI / Chainlit
+      │
+      ▼
+ResearchRunner ── cache · lifecycle · checkpoints · resume · memory persistence
+      │
+      ▼
+LangGraph 拓扑
+Planner → Searcher → Synthesizer → Writer
+  │         │            │             │
+ResearchPlan Documents  Findings       Report
+```
+
+`src/graph.py` 只负责线性的四节点拓扑，`src/runner.py` 负责一次运行的编排。
+新运行只使用 canonical 字段；`src/state_compat.py` 在显式边界处 hydrate 旧输入与旧
+checkpoint，冲突时始终以 canonical 值为准。
+
+## 核心设计
+
+- **确定性有界搜索**：`SEARCHER_MODE=deterministic_v2` 是默认且受支持的路径。
+  `SearchExecutor` 负责预算、提取上限、去重、可信度排序和一次有界自适应补搜。
+- **Canonical provenance**：有序且唯一的 `Document` 是唯一参考文献表；
+  `Finding.source_document_ids` 将论断关联回来源，文档顺序决定引用编号。
+- **Citation integrity 不等于事实保证**：评估检查引用编号、文档顺序、URL 与参考文献表
+  一致性。可选的 Evidence grounding 独立观察已记录的支持、反驳或缺失支持；关闭
+  Evidence 时其状态为 unavailable。
+- **运行时控制**：trace、usage、diagnostics、cache replay、内存 checkpoint 与可选
+  SQLite resume 都属于运行编排，而不是 Graph 路由。
+- **离线评估**：fake-only 测试覆盖 canonical 工作流、缓存 round-trip、确定性搜索、
+  报告生成和入口一致性；CI 不调用真实 provider。
+
+## 快速开始
+
+要求：Python 3.11+、一个 LLM provider 和一个搜索 provider。
+`pyproject.toml` 是唯一正式依赖真源。
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 Copy-Item .env.example .env
 ```
 
-Set `DEEPSEEK_API_KEY` and `TAVILY_API_KEY` in `.env`, then run:
+`.env.example` 是明确的 **DeepSeek + Tavily** 配置。填入
+`DEEPSEEK_API_KEY` 和 `TAVILY_API_KEY` 后运行：
 
 ```powershell
 .venv\Scripts\python.exe main.py "Compare the EU AI Act with current US federal AI governance."
 ```
 
-The report is saved to `outputs/`. For the Chainlit demo:
+CLI 会将 canonical 报告写入 `outputs/`。Chainlit 演示使用同一个
+`ResearchRunner` 入口，但为浏览器会话显式关闭 cache 和 Memory persistence：
 
 ```powershell
 .venv\Scripts\chainlit run app.py
 ```
 
-## Default portfolio path
+未使用 `.env` 覆盖时，代码默认使用 Gemini 和 DuckDuckGo；请使用相匹配的
+provider/key 组合，不要将示例配置与默认回退配置混用。
 
-The default configuration intentionally favors one readable execution path:
+## 可选能力
 
-```dotenv
-SEARCHER_MODE=deterministic_v2
-SEARCHER_ADAPTIVE_ENABLED=true
-SEARCHER_ADAPTIVE_MAX_ROUNDS=1
-WRITER_SECTION_EXECUTION_MODE=serial
-RESEARCH_MEMORY_ENABLED=false
-EVIDENCE_ANALYZER_ENABLED=false
-```
+| 能力 | 默认值 | 作用范围 |
+|---|---:|---|
+| 本地 Memory | 关闭 | 有界词法检索和可选的完成后持久化；不会作为 Writer 输入。 |
+| Evidence sidecar | 关闭 | 来源分析与 grounding 观测；不会改变 Graph 路由。 |
+| SQLite checkpoint/resume | 普通运行关闭 | 带 lease 的显式持久化运行/恢复路径。 |
+| 有界 Writer 并发 | 串行 | 实验性配置，不属于默认作品集叙事。 |
+| legacy autonomous Searcher | 关闭 | 仅支持显式 `legacy_agent` 兼容模式。 |
 
-`deterministic_v2` is the supported Searcher path. The Writer runs sections
-serially by default. The adaptive follow-up is bounded to one attempt and uses
-the existing query plan; it is not a general reflection loop.
+## 评估与 Showcase
 
-## Source provenance and limits
+稳定 evaluator 提供 planning/retrieval coverage、source diversity、citation integrity、
+可选 Evidence grounding、usage、latency、trace 与报告完整度。这些都是只读观测：
+任何得分都不会改变路由，也不构成事实正确性保证。
 
-Each retained Document carries its originating query, title, normalized URL,
-snippet, extracted content when available, and credibility metadata. Documents
-are unique and retain Searcher's credibility-stable order: that order is the
-citation map, so `[n]` always resolves to `Report.citations[n-1]` and a URL
-receives only one bibliography number.
-
-The optional Evidence sidecar provides deeper document analysis diagnostics,
-but it is disabled by default and does not control Graph routing. It should not
-be interpreted as a factuality guarantee. Likewise, trace and evaluation are
-observational rather than runtime gates.
-
-## Repository map
-
-```text
-src/
-  graph.py                  Graph V1 and run entry points
-  agents/                   Planner / Searcher / Synthesizer / Writer entry modules
-  search/                   deterministic executor, coverage, and providers
-  prompts/                  agent prompts
-  evidence/                 optional provenance/evidence sidecar
-  evaluation/               read-only evaluation and showcase support
-  memory/                   optional local lexical-memory implementation
-  runtime_*.py              lifecycle, deadline, checkpoint, and lease support
-
-scripts/
-  run_showcase.py           manual end-to-end showcase archive runner
-
-experiments/
-  memory/                   local memory demo entry point
-  writer_performance/       serial vs bounded Writer benchmark
-  benchmarks/               manual workload/repeatability benchmarks
-  governance/               notes for action and human-review exploration
-  archives/                 historical benchmark, showcase, and handoff records
-```
-
-The `src/agents/` package is the stable public entry point: each role owns its
-own class body, while `src/state_compat.py` provides the explicit,
-canonical-first compatibility boundary for legacy State payloads. Legacy
-`search_results`, `key_findings`, `report_sections`, and `final_report` are
-Graph-output projections, not Agent inputs.
-
-## Validation
-
-The test suite uses fakes for LLMs, providers, and web extraction. Run:
+运行 fake-only 回归：
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q --basetemp .pytest-local
 git diff --check
 ```
 
-## Optional experiments
+固定 showcase runner 是手动入口，因为它会调用已配置的 provider；结果会以时间戳写入
+`experiments/archives/showcase/`：
 
-Memory, Writer concurrency, governance contracts, and historical workload
-benchmarks remain available for inspection, but they are intentionally outside
-the default demo path. Their scope, compatibility boundaries, and Phase 2
-deferrals are documented in [experiments/README.md](experiments/README.md) and
-[PROJECT_HANDOFF.md](PROJECT_HANDOFF.md).
+```powershell
+.venv\Scripts\python.exe scripts\run_showcase.py
+```
+
+## 目录说明
+
+```text
+src/
+  runner.py                 CLI / Web 共用的运行编排
+  graph.py                  Planner → Searcher → Synthesizer → Writer 拓扑
+  agents/                   canonical 核心 Agent；compat/ 保存 legacy Searcher
+  search/                   确定性 executor 和 provider adapter
+  evaluation/               稳定、只读的 evaluator 与固定 showcase
+  state.py                  flat canonical State 与 legacy 输入字段
+  state_compat.py           显式 canonical-first hydration/projection 边界
+  evidence/, memory/        可选 sidecar
+
+tests/core/                 golden-path 回归测试
+tests/evidence/             可选 Evidence 契约测试
+tests/experiments/          冻结 Governance 契约测试
+experiments/                冻结治理模块、手动 benchmark 和历史归档
+```
+
+冻结的 governance/action、calibration、repeatability、real-workload 与
+writer-performance 研究保存在 `experiments/` 下；它们不参与默认 Graph 或稳定
+evaluation API。详见 [ARCHITECTURE.md](ARCHITECTURE.md) 和
+[experiments/README.md](experiments/README.md)。
+
+## GitHub 作品集信息
+
+- **建议 description**：`A deterministic, source-aware Research Agent with canonical provenance, replay-safe runtime controls, and offline evaluation.`
+- **建议 topics**：`langgraph`、`agentic-ai`、`research-agent`、`llm`、`retrieval`、
+  `evaluation`、`python`、`provenance`。

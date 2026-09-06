@@ -12,8 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.evaluation.real_workload import manual_deepseek_tavily_runner
-from src.evaluation.repeatability import archive_repeatability_benchmark, run_repeatability_benchmark
+from experiments.evaluation.real_workload import manual_deepseek_tavily_runner
+from experiments.evaluation.repeatability import archive_repeatability_benchmark, run_repeatability_benchmark
 
 
 def _arguments() -> argparse.Namespace:
