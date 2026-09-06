@@ -26,20 +26,20 @@ def _llm_patch_totals(
     return calls, input_tokens, output_tokens
 
 
-def _usage_from_legacy_totals(
+def _usage_from_totals(
     state: ResearchState,
     *,
     llm_calls: int,
-    total_input_tokens: int,
-    total_output_tokens: int,
+    input_tokens: int,
+    output_tokens: int,
 ) -> UsageMetrics:
     usage = canonical_usage(state)
     return UsageMetrics(
         llm_calls=llm_calls,
         tool_calls=usage.tool_calls,
-        input_tokens=total_input_tokens,
-        output_tokens=total_output_tokens,
-        total_tokens=total_input_tokens + total_output_tokens,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
         latency_seconds=usage.latency_seconds,
         estimated_cost=usage.estimated_cost,
     )
@@ -57,22 +57,19 @@ def _llm_failure_patch(
     iteration = canonical_iteration(state)
     patch: Dict[str, Any] = {
         "error": message,
-        **({"iterations": iteration + 1, "iteration": iteration + 1} if include_iteration else {}),
+        **({"iteration": iteration + 1} if include_iteration else {}),
         **failed_lifecycle_patch(),
     }
     if details:
         prior_usage = canonical_usage(state)
         patch.update(
             {
-                "llm_calls": prior_usage.llm_calls + calls,
-                "total_input_tokens": prior_usage.input_tokens + input_tokens,
-                "total_output_tokens": prior_usage.output_tokens + output_tokens,
                 "llm_call_details": state.llm_call_details + details,
-                "usage": _usage_from_legacy_totals(
+                "usage": _usage_from_totals(
                     state,
                     llm_calls=prior_usage.llm_calls + calls,
-                    total_input_tokens=prior_usage.input_tokens + input_tokens,
-                    total_output_tokens=prior_usage.output_tokens + output_tokens,
+                    input_tokens=prior_usage.input_tokens + input_tokens,
+                    output_tokens=prior_usage.output_tokens + output_tokens,
                 ),
             }
         )

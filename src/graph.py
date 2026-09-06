@@ -11,7 +11,6 @@ from src.state_compat import (
     canonical_plan,
     canonical_report_text,
     hydrate_canonical_state,
-    legacy_projection_patch,
 )
 from src.agents import ResearchPlanner, ResearchSearcher, ResearchSynthesizer, ReportWriter
 from src.agent_trace import trace_node_execution
@@ -68,27 +67,24 @@ def create_research_graph(checkpointer=None):
     
     workflow = StateGraph(ResearchState)
     
-    # Agents return canonical business patches. This boundary explicitly adds
-    # legacy projections for historical checkpoints, UI, and callers.
+    # Agents and Graph exchange canonical business patches only. Legacy input
+    # hydration happens before node work; optional output projection remains an
+    # explicit state_compat utility for legacy-only consumers.
     async def plan_node(state: ResearchState) -> Dict[str, Any]:
         canonical_state = hydrate_canonical_state(state)
-        patch = await trace_node_execution(canonical_state, node="plan", agent="ResearchPlanner", operation="plan", execute=planner.plan)
-        return legacy_projection_patch(canonical_state, patch)
+        return await trace_node_execution(canonical_state, node="plan", agent="ResearchPlanner", operation="plan", execute=planner.plan)
 
     async def search_node(state: ResearchState) -> Dict[str, Any]:
         canonical_state = hydrate_canonical_state(state)
-        patch = await trace_node_execution(canonical_state, node="search", agent="ResearchSearcher", operation="search", execute=searcher.search)
-        return legacy_projection_patch(canonical_state, patch)
+        return await trace_node_execution(canonical_state, node="search", agent="ResearchSearcher", operation="search", execute=searcher.search)
 
     async def synthesize_node(state: ResearchState) -> Dict[str, Any]:
         canonical_state = hydrate_canonical_state(state)
-        patch = await trace_node_execution(canonical_state, node="synthesize", agent="ResearchSynthesizer", operation="synthesize", execute=synthesizer.synthesize)
-        return legacy_projection_patch(canonical_state, patch)
+        return await trace_node_execution(canonical_state, node="synthesize", agent="ResearchSynthesizer", operation="synthesize", execute=synthesizer.synthesize)
 
     async def writer_node(state: ResearchState) -> Dict[str, Any]:
         canonical_state = hydrate_canonical_state(state)
-        patch = await trace_node_execution(canonical_state, node="write_report", agent="ReportWriter", operation="write_report", execute=writer.write_report)
-        return legacy_projection_patch(canonical_state, patch)
+        return await trace_node_execution(canonical_state, node="write_report", agent="ReportWriter", operation="write_report", execute=writer.write_report)
 
     workflow.add_node("plan", plan_node)
     workflow.add_node("search", search_node)

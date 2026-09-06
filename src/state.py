@@ -130,53 +130,6 @@ class MemoryItem(BaseModel):
     created_at: Optional[str] = Field(default=None, description="记忆创建时间")
 
 
-class CriticFeedback(BaseModel):
-    """未来 Reflection/Critic Agent 使用的反馈项。"""
-
-    feedback_id: str = Field(default="", description="反馈标识")
-    category: str = Field(default="", description="反馈类别")
-    severity: str = Field(default="info", description="反馈严重程度")
-    message: str = Field(default="", description="反馈内容")
-    target: Optional[str] = Field(default=None, description="反馈目标")
-    evidence_refs: List[str] = Field(default_factory=list, description="相关证据引用")
-    suggested_action: Optional[str] = Field(default=None, description="建议动作")
-    resolved: bool = Field(default=False, description="是否已解决")
-
-
-class AgentMessage(BaseModel):
-    """未来多 Agent 协作使用的可序列化消息。"""
-
-    message_id: str = Field(default="", description="消息标识")
-    sender: str = Field(default="", description="发送方")
-    receiver: str = Field(default="", description="接收方")
-    role: str = Field(default="", description="消息角色")
-    content: str = Field(default="", description="消息内容")
-    message_type: str = Field(default="", description="消息类型")
-    created_at: Optional[str] = Field(default=None, description="消息时间")
-
-
-class SupervisorDecision(BaseModel):
-    """未来 Supervisor Agent 使用的决策占位模型。"""
-
-    action: Optional[str] = Field(default=None, description="下一步动作")
-    reason: Optional[str] = Field(default=None, description="决策原因")
-    target_agent: Optional[str] = Field(default=None, description="目标 Agent")
-    confidence: Optional[float] = Field(default=None, description="决策置信度")
-
-
-class QualityScore(BaseModel):
-    """未来 Evaluation/Critic 使用的质量评分占位模型。"""
-
-    overall: Optional[float] = Field(default=None, description="总体质量分数")
-    factuality: Optional[float] = Field(default=None, description="事实性分数")
-    citation_coverage: Optional[float] = Field(default=None, description="引用覆盖度")
-    completeness: Optional[float] = Field(default=None, description="完整性分数")
-    coherence: Optional[float] = Field(default=None, description="连贯性分数")
-    task_alignment: Optional[float] = Field(default=None, description="任务对齐分数")
-    evaluator: Optional[str] = Field(default=None, description="评估者")
-    passed: Optional[bool] = Field(default=None, description="是否通过")
-
-
 class ResearchState(BaseModel):
     """ResearchOS V1 研究流程状态。
 
@@ -271,46 +224,28 @@ class ResearchState(BaseModel):
     )
 
     # =========================================================================
-    # 未来扩展字段：Memory / Reflection / Multi-Agent Supervisor / Evaluation
+    # 可选 Memory sidecar fields
     # =========================================================================
 
     retrieved_memory: List[MemoryItem] = Field(
         default_factory=list,
-        description="未来 Memory Agent 检索到的记忆"
+        description="可选 local memory 检索到的记忆"
     )
     memory_ids: List[str] = Field(
         default_factory=list,
-        description="未来 Memory Agent 使用的记忆 ID"
+        description="可选 local memory 使用的记忆 ID"
     )
     memory_diagnostics: Dict[str, Any] = Field(
         default_factory=dict,
         description="可选 local memory 的只读检索、hint 与写入诊断；不参与路由或 Writer 输入"
     )
-    critic_feedback: List[CriticFeedback] = Field(
-        default_factory=list,
-        description="未来 Critic/Reflection Agent 的反馈"
-    )
-    agent_messages: List[AgentMessage] = Field(
-        default_factory=list,
-        description="未来多 Agent 协作消息"
-    )
-    active_agent: Optional[str] = Field(default=None, description="当前活跃 Agent")
-    next_action: Optional[str] = Field(default=None, description="未来 Supervisor 决定的下一动作")
-    pending_tasks: List[str] = Field(
-        default_factory=list,
-        description="未来 Supervisor 管理的待处理任务"
-    )
-    supervisor_decision: Optional[SupervisorDecision] = Field(
-        default=None,
-        description="未来 Supervisor 决策"
-    )
-
     # =========================================================================
-    # 兼容字段：当前 Agent、Graph、CLI、Web 仍使用这些字段
+    # Legacy compatibility input fields. New runs leave these at defaults;
+    # state_compat hydrates them at explicit input/checkpoint boundaries.
     # =========================================================================
     
     # 用户输入
-    research_topic: str = Field(description="要研究的主题")
+    research_topic: str = Field(default="", description="旧版研究主题")
     
     # 规划阶段
     plan: Optional[ResearchPlan] = Field(default=None, description="研究计划")
@@ -342,13 +277,12 @@ class ResearchState(BaseModel):
     iterations: int = Field(default=0, description="迭代次数")
     
     # 质量与指标
-    quality_score: Optional[QualityScore] = Field(default=None, description="报告质量指标")
     credibility_scores: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="来源可信度分数"
     )
     
-    # LLM 跟踪
+    # Legacy usage totals; canonical ``usage`` is authoritative for new runs.
     llm_calls: int = Field(default=0, description="LLM API 调用总次数")
     total_input_tokens: int = Field(default=0, description="使用的输入 Token 总数")
     total_output_tokens: int = Field(default=0, description="生成的输出 Token 总数")

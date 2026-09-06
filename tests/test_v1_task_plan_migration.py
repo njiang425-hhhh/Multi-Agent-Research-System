@@ -24,10 +24,10 @@ def _plan(query: str) -> ResearchPlan:
     )
 
 
-def test_graph_entry_explicitly_double_writes_task_fields() -> None:
+def test_runner_entry_writes_canonical_task_field_only() -> None:
     state = _create_initial_state("canonical research task")
 
-    assert state.research_topic == "canonical research task"
+    assert state.research_topic == ""
     assert state.query == "canonical research task"
 
 

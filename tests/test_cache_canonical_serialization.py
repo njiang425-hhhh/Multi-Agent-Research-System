@@ -91,3 +91,31 @@ def test_cache_rejects_pre_schema_string_fallback_payloads(tmp_path) -> None:
     cache._save_cache()
 
     assert ResearchCache(cache_dir=tmp_path / "research-cache").get(topic) is None
+
+
+def test_cache_v2_hydrates_a_legacy_business_payload_without_overwriting_canonical_values(tmp_path) -> None:
+    cache = ResearchCache(cache_dir=tmp_path / "research-cache")
+    topic = "legacy v2 cache"
+    legacy = ResearchState(
+        research_topic="legacy topic",
+        plan=ResearchPlan(
+            topic="legacy topic",
+            objectives=["legacy objective"],
+            search_queries=[SearchQuery(query="legacy query", purpose="legacy")],
+            report_outline=["Summary"],
+        ),
+    )
+    cache._cache[cache._get_key(topic)] = {
+        "topic": topic,
+        "timestamp": "2026-09-06T00:00:00",
+        "data": {
+            "cache_schema_version": 2,
+            "state": legacy.model_dump(mode="json"),
+        },
+    }
+    cache._save_cache()
+
+    restored = ResearchCache(cache_dir=tmp_path / "research-cache").get(topic)
+
+    assert restored is not None
+    assert canonical_plan(restored).topic == "legacy topic"

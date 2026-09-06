@@ -35,7 +35,7 @@ async def _planner_output(case_id: str) -> ResearchPlan:
         max_retries=1,
     )
     patch = await planner.plan(ResearchState(research_topic=payload["topic"]))
-    assert patch["llm_calls"] == 1
+    assert patch["usage"].llm_calls == 1
     assert len(patch["llm_call_details"]) == 1
     return patch["research_plan"]
 

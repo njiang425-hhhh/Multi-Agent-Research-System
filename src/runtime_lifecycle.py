@@ -38,10 +38,9 @@ def create_new_run_state(
     thread_id: Optional[str] = None,
     run_policy: Optional[RunPolicy] = None,
 ) -> ResearchState:
-    """Create a fresh run with explicit V1/legacy task-field double write."""
+    """Create a fresh run with canonical task data only."""
     run_id = str(uuid4())
     return ResearchState(
-        research_topic=topic,
         query=topic,
         run_id=run_id,
         current_stage="received",

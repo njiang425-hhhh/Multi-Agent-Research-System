@@ -105,7 +105,8 @@ def test_runner_constructs_one_canonical_workflow_state(monkeypatch) -> None:
     result = asyncio.run(ResearchRunner(use_cache=False, use_checkpoints=False).run("runner topic", verbose=False))
 
     initial, run_config = graph.initial_states[0]
-    assert initial.query == initial.research_topic == "runner topic"
+    assert initial.query == "runner topic"
+    assert initial.research_topic == ""
     assert initial.status == "running"
     assert initial.current_stage == "planning"
     assert run_config is None

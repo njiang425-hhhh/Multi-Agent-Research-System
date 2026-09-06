@@ -34,15 +34,25 @@ def _field_was_supplied(state: ResearchState, field: str) -> bool:
 
 
 def canonical_query(state: ResearchState | Mapping[str, Any]) -> str:
-    """Return ``query`` when present, otherwise the legacy topic."""
+    """Return the supplied canonical query, otherwise the legacy topic."""
 
-    return str(_read(state, "query", "") or _read(state, "research_topic", "") or "")
+    if isinstance(state, ResearchState):
+        if _field_was_supplied(state, "query"):
+            return str(state.query or "")
+    elif "query" in state:
+        return str(_read(state, "query", "") or "")
+    return str(_read(state, "research_topic", "") or "")
 
 
 def canonical_plan(state: ResearchState | Mapping[str, Any]) -> ResearchPlan | None:
     """Return the canonical plan with an explicit legacy fallback."""
 
-    value = _read(state, "research_plan", None) or _read(state, "plan", None)
+    if isinstance(state, ResearchState) and _field_was_supplied(state, "research_plan"):
+        value = state.research_plan
+    elif isinstance(state, Mapping) and "research_plan" in state:
+        value = _read(state, "research_plan", None)
+    else:
+        value = _read(state, "plan", None)
     if value is None or isinstance(value, ResearchPlan):
         return value
     try:
@@ -110,6 +120,11 @@ def canonical_usage(state: ResearchState | Mapping[str, Any]) -> UsageMetrics:
 def canonical_report(state: ResearchState | Mapping[str, Any]) -> Report | None:
     """Return the canonical report, or build a read-only view of legacy output."""
 
+    report_supplied = (
+        _field_was_supplied(state, "report")
+        if isinstance(state, ResearchState)
+        else "report" in state
+    )
     report = _read(state, "report", None)
     if report is not None:
         if isinstance(report, Report):
@@ -120,6 +135,8 @@ def canonical_report(state: ResearchState | Mapping[str, Any]) -> Report | None:
             # Evaluation/archive payloads may hold a partial report summary.
             # Keep the compatibility boundary read-only and fall back below.
             pass
+    if report_supplied:
+        return None
     final_report = _read(state, "final_report", None)
     if not final_report:
         return None
@@ -230,11 +247,15 @@ def canonical_patch_from_legacy(
     """Build missing canonical values without overwriting supplied canonical data."""
 
     patch: dict[str, Any] = {}
-    if not state.query:
+    if not _field_was_supplied(state, "query") and state.research_topic:
         patch["query"] = state.research_topic
-    if state.research_plan is None and state.plan is not None:
+    if not _field_was_supplied(state, "research_plan") and state.plan is not None:
         patch["research_plan"] = state.plan
-    if include_semantic_projections and not state.documents and state.search_results:
+    if (
+        include_semantic_projections
+        and not _field_was_supplied(state, "documents")
+        and state.search_results
+    ):
         scores = list(state.credibility_scores)
         patch["documents"] = scored_search_results_to_documents(
             (
@@ -243,9 +264,17 @@ def canonical_patch_from_legacy(
             )
             for index, result in enumerate(state.search_results)
         )
-    if include_semantic_projections and not state.findings and state.key_findings:
+    if (
+        include_semantic_projections
+        and not _field_was_supplied(state, "findings")
+        and state.key_findings
+    ):
         patch["findings"] = key_findings_to_findings(state.key_findings)
-    if include_semantic_projections and state.report is None and state.final_report:
+    if (
+        include_semantic_projections
+        and not _field_was_supplied(state, "report")
+        and state.final_report
+    ):
         patch["report"] = canonical_report(state)
     if not _field_was_supplied(state, "iteration") and state.iterations:
         patch["iteration"] = state.iterations
@@ -270,9 +299,7 @@ def hydrate_canonical_state(
     if isinstance(payload, ResearchState):
         state = payload
     else:
-        raw = dict(payload)
-        raw.setdefault("research_topic", str(raw.get("query") or ""))
-        state = ResearchState.model_validate(raw)
+        state = ResearchState.model_validate(dict(payload))
     return state.model_copy(
         update=canonical_patch_from_legacy(
             state,

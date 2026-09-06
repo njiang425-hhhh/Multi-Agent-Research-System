@@ -1,4 +1,4 @@
-"""Fake-only tests for explicit legacy tracking -> V1 usage double writes."""
+"""Fake-only tests for legacy usage hydration and canonical Agent outputs."""
 
 import asyncio
 import json
@@ -11,7 +11,7 @@ from src.agents import (
     ResearchPlanner,
     ResearchSearcher,
     ResearchSynthesizer,
-    _usage_from_legacy_totals,
+    _usage_from_totals,
 )
 from src.evidence.config import EvidenceRuntimeConfig
 from src.evidence.sidecar import EvidenceSidecarResult
@@ -27,6 +27,7 @@ from src.state import (
     SearchResult,
     UsageMetrics,
 )
+from src.state_compat import canonical_usage
 
 
 def _plan() -> ResearchPlan:
@@ -68,25 +69,26 @@ def _state(**overrides: object) -> ResearchState:
     return ResearchState(**values)
 
 
-def _assert_usage_matches_legacy(patch: dict, state: ResearchState) -> None:
+def _assert_usage_is_canonical(patch: dict, state: ResearchState) -> None:
     usage = patch["usage"]
-    assert usage.llm_calls == patch["llm_calls"]
-    assert usage.input_tokens == patch["total_input_tokens"]
-    assert usage.output_tokens == patch["total_output_tokens"]
+    assert "llm_calls" not in patch
+    assert "total_input_tokens" not in patch
+    assert "total_output_tokens" not in patch
+    assert "iterations" not in patch
     assert usage.total_tokens == usage.input_tokens + usage.output_tokens
     assert usage.tool_calls == state.usage.tool_calls
     assert usage.latency_seconds == state.usage.latency_seconds
     assert usage.estimated_cost == state.usage.estimated_cost
 
 
-def test_usage_projection_mirrors_legacy_totals_and_preserves_v1_only_fields() -> None:
+def test_usage_builder_hydrates_legacy_input_and_preserves_v1_only_fields() -> None:
     state = _state()
 
-    usage = _usage_from_legacy_totals(
+    usage = _usage_from_totals(
         state,
         llm_calls=8,
-        total_input_tokens=80,
-        total_output_tokens=21,
+        input_tokens=80,
+        output_tokens=21,
     )
 
     assert usage.model_dump() == {
@@ -100,7 +102,7 @@ def test_usage_projection_mirrors_legacy_totals_and_preserves_v1_only_fields() -
     }
 
 
-def test_planner_double_writes_usage_for_a_legacy_only_checkpoint() -> None:
+def test_planner_returns_canonical_usage_for_a_legacy_only_checkpoint() -> None:
     state = ResearchState.model_validate(
         {
             "research_topic": "legacy topic",
@@ -122,7 +124,10 @@ def test_planner_double_writes_usage_for_a_legacy_only_checkpoint() -> None:
         ResearchPlanner(llm=RunnableLambda(lambda _prompt: response), max_retries=1).plan(state)
     )
 
-    _assert_usage_matches_legacy(patch, state)
+    _assert_usage_is_canonical(patch, state)
+    assert patch["usage"].llm_calls == 4
+    assert patch["usage"].input_tokens >= 30
+    assert patch["usage"].output_tokens >= 15
     assert patch["usage"].tool_calls == 0
     assert patch["usage"].latency_seconds == 0.0
     assert patch["usage"].estimated_cost is None
@@ -167,7 +172,7 @@ class _FakeSearchExecutor:
         )
 
 
-def test_both_searcher_success_paths_double_write_usage(monkeypatch) -> None:
+def test_both_searcher_success_paths_return_canonical_usage(monkeypatch) -> None:
     legacy_state = _state()
     monkeypatch.setattr(
         agents_module,
@@ -182,8 +187,8 @@ def test_both_searcher_success_paths_double_write_usage(monkeypatch) -> None:
         ).search(legacy_state)
     )
 
-    _assert_usage_matches_legacy(legacy_patch, legacy_state)
-    assert legacy_patch["llm_calls"] == legacy_state.llm_calls + 1
+    _assert_usage_is_canonical(legacy_patch, legacy_state)
+    assert legacy_patch["usage"].llm_calls == canonical_usage(legacy_state).llm_calls + 1
 
     deterministic_state = _state()
     deterministic_searcher = ResearchSearcher(
@@ -195,14 +200,15 @@ def test_both_searcher_success_paths_double_write_usage(monkeypatch) -> None:
     deterministic_patch = asyncio.run(deterministic_searcher.search(deterministic_state))
 
     usage = deterministic_patch["usage"]
-    assert usage.llm_calls == deterministic_patch["llm_calls"]
-    assert usage.input_tokens == deterministic_patch["total_input_tokens"]
-    assert usage.output_tokens == deterministic_patch["total_output_tokens"]
+    assert "llm_calls" not in deterministic_patch
+    assert "total_input_tokens" not in deterministic_patch
+    assert "total_output_tokens" not in deterministic_patch
+    assert "iterations" not in deterministic_patch
     assert usage.total_tokens == usage.input_tokens + usage.output_tokens
     assert usage.tool_calls == deterministic_state.usage.tool_calls + 2
     assert usage.latency_seconds == deterministic_state.usage.latency_seconds
     assert usage.estimated_cost == deterministic_state.usage.estimated_cost
-    assert deterministic_patch["llm_calls"] == deterministic_state.llm_calls
+    assert usage.llm_calls == canonical_usage(deterministic_state).llm_calls
     assert len(deterministic_patch["llm_call_details"]) == len(deterministic_state.llm_call_details) + 1
 
 
@@ -240,13 +246,13 @@ def test_synthesizer_rebuilds_usage_after_evidence_delta(monkeypatch) -> None:
 
     patch = asyncio.run(synthesizer.synthesize(state))
 
-    _assert_usage_matches_legacy(patch, state)
-    assert patch["llm_calls"] == state.llm_calls + 3
-    assert patch["total_input_tokens"] >= state.total_input_tokens + 20
-    assert patch["total_output_tokens"] >= state.total_output_tokens + 8
+    _assert_usage_is_canonical(patch, state)
+    assert patch["usage"].llm_calls == canonical_usage(state).llm_calls + 3
+    assert patch["usage"].input_tokens >= canonical_usage(state).input_tokens + 20
+    assert patch["usage"].output_tokens >= canonical_usage(state).output_tokens + 8
 
 
-def test_writer_double_writes_usage_and_failure_keeps_existing_patch(monkeypatch) -> None:
+def test_writer_returns_canonical_usage_and_failure_keeps_existing_patch(monkeypatch) -> None:
     state = _state()
     writer = ReportWriter(llm=object(), max_retries=1)
 
@@ -259,8 +265,8 @@ def test_writer_double_writes_usage_and_failure_keeps_existing_patch(monkeypatch
     monkeypatch.setattr(writer, "_write_section", fake_write_section)
     patch = asyncio.run(writer.write_report(state))
 
-    _assert_usage_matches_legacy(patch, state)
-    assert patch["llm_calls"] == state.llm_calls + 1
+    _assert_usage_is_canonical(patch, state)
+    assert patch["usage"].llm_calls == canonical_usage(state).llm_calls + 1
 
     failure_patch = asyncio.run(ReportWriter(llm=object(), max_retries=1).write_report(ResearchState(research_topic="topic")))
     assert failure_patch == {

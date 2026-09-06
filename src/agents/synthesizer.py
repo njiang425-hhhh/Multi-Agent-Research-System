@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Optional
 
 from langchain_core.language_models import BaseChatModel
 
-from src.agents._llm_support import LLM_OPERATION_TIMEOUT_SECONDS, _legacy_attempt_limit_to_retries, _llm_failure_patch, _llm_patch_totals, _usage_from_legacy_totals
+from src.agents._llm_support import LLM_OPERATION_TIMEOUT_SECONDS, _legacy_attempt_limit_to_retries, _llm_failure_patch, _llm_patch_totals, _usage_from_totals
 from src.callbacks import emit_error, emit_synthesis_complete, emit_synthesis_start
 from src.config import config
 from src.evidence.config import EvidenceRuntimeConfig
@@ -86,12 +86,9 @@ class ResearchSynthesizer:
         await emit_synthesis_complete(len(findings))
         success_patch: Dict[str, Any] = {
             "findings": findings, "current_stage": "reporting",
-            "iterations": canonical_iteration(state) + 1, "iteration": canonical_iteration(state) + 1,
-            "llm_calls": canonical_usage(state).llm_calls + calls,
-            "total_input_tokens": canonical_usage(state).input_tokens + input_tokens,
-            "total_output_tokens": canonical_usage(state).output_tokens + output_tokens,
+            "iteration": canonical_iteration(state) + 1,
             "llm_call_details": state.llm_call_details + execution.call_details,
-            "usage": _usage_from_legacy_totals(state, llm_calls=canonical_usage(state).llm_calls + calls, total_input_tokens=canonical_usage(state).input_tokens + input_tokens, total_output_tokens=canonical_usage(state).output_tokens + output_tokens),
+            "usage": _usage_from_totals(state, llm_calls=canonical_usage(state).llm_calls + calls, input_tokens=canonical_usage(state).input_tokens + input_tokens, output_tokens=canonical_usage(state).output_tokens + output_tokens),
         }
         if execution.context is not None:
             success_patch["execution_context"] = execution.context
@@ -124,11 +121,14 @@ class ResearchSynthesizer:
             success_patch["execution_context"] = sidecar_result.execution_context
         # Evidence output is optional enrichment and never replaces the
         # source-linked Findings passed to Writer.
-        success_patch["llm_calls"] += sidecar_result.llm_calls_delta
-        success_patch["total_input_tokens"] += sidecar_result.input_tokens_delta
-        success_patch["total_output_tokens"] += sidecar_result.output_tokens_delta
         success_patch["llm_call_details"] = success_patch["llm_call_details"] + sidecar_result.llm_call_details
-        success_patch["usage"] = _usage_from_legacy_totals(state, llm_calls=success_patch["llm_calls"], total_input_tokens=success_patch["total_input_tokens"], total_output_tokens=success_patch["total_output_tokens"])
+        usage = success_patch["usage"]
+        success_patch["usage"] = usage.model_copy(update={
+            "llm_calls": usage.llm_calls + sidecar_result.llm_calls_delta,
+            "input_tokens": usage.input_tokens + sidecar_result.input_tokens_delta,
+            "output_tokens": usage.output_tokens + sidecar_result.output_tokens_delta,
+            "total_tokens": usage.total_tokens + sidecar_result.input_tokens_delta + sidecar_result.output_tokens_delta,
+        })
         return success_patch
 
     @staticmethod

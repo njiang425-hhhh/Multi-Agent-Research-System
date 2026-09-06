@@ -149,7 +149,6 @@ def test_deterministic_searcher_keeps_existing_empty_result_error_behavior() -> 
 
     assert patch == {
         "error": "搜索失败：fake search failure",
-        "iterations": 1,
         "iteration": 1,
         "current_stage": "failed",
         "status": "failed",

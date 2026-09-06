@@ -74,8 +74,43 @@ class ResearchCache:
         canonical_state = hydrate_canonical_state(state)
         return {
             "cache_schema_version": CACHE_SCHEMA_VERSION,
-            "state": canonical_state.model_dump(mode="json"),
+            # Preserve which canonical fields were actually supplied.  A full
+            # dump makes an old legacy-only state indistinguishable from one
+            # that explicitly supplied canonical empty values on replay.
+            "state": canonical_state.model_dump(mode="json", exclude_unset=True),
         }
+
+    @staticmethod
+    def _legacy_full_state_mapping(raw_state: Mapping[str, Any]) -> dict[str, Any]:
+        """Prepare pre-3C full v2 cache payloads for legacy hydration.
+
+        Phase 3A v2 entries used a full ``model_dump``.  Only those legacy
+        payloads contain every State field while relying on legacy business
+        values; new entries retain field presence through ``exclude_unset``.
+        """
+
+        from src.state import ResearchState
+
+        raw = dict(raw_state)
+        if not set(ResearchState.model_fields).issubset(raw):
+            return raw
+        legacy_pairs = {
+            "query": ("", "research_topic"),
+            "research_plan": (None, "plan"),
+            "documents": ([], "search_results"),
+            "findings": ([], "key_findings"),
+            "report": (None, "final_report"),
+            "iteration": (0, "iterations"),
+        }
+        for canonical_field, (default, legacy_field) in legacy_pairs.items():
+            if raw.get(canonical_field) == default and raw.get(legacy_field):
+                raw.pop(canonical_field, None)
+        if raw.get("usage") == ResearchState().usage.model_dump(mode="json") and any(
+            raw.get(field)
+            for field in ("llm_calls", "total_input_tokens", "total_output_tokens")
+        ):
+            raw.pop("usage", None)
+        return raw
 
     @staticmethod
     def _deserialize_state(payload: Any) -> Optional[Dict[str, Any]]:
@@ -104,7 +139,9 @@ class ResearchCache:
             from src.state import ResearchState
             from src.state_compat import hydrate_canonical_state
 
-            state = hydrate_canonical_state(ResearchState.model_validate(raw_state))
+            state = hydrate_canonical_state(
+                ResearchState.model_validate(ResearchCache._legacy_full_state_mapping(raw_state))
+            )
             return state.model_dump(mode="json")
         except Exception as error:
             logger.warning("缓存条目未通过 ResearchState 校验，忽略该条目：%s", error)

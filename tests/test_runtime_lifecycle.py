@@ -17,8 +17,8 @@ from src.runtime_control import RunPolicy, create_execution_context
 def test_new_run_has_an_independent_uuid_and_pending_received_state() -> None:
     state = create_new_run_state("Runtime lifecycle topic")
 
-    assert state.research_topic == "Runtime lifecycle topic"
     assert state.query == "Runtime lifecycle topic"
+    assert state.research_topic == ""
     assert UUID(state.run_id).version == 4
     assert state.current_stage == "received"
     assert state.status == "pending"

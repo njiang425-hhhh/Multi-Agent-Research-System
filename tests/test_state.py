@@ -1,8 +1,5 @@
 """ResearchState V1 contract tests."""
 
-import pytest
-from pydantic import ValidationError
-
 from src.state import (
     Finding,
     ReportSection,
@@ -14,14 +11,14 @@ from src.state import (
 )
 
 
-def test_research_state_initializes_v1_defaults() -> None:
-    """A legacy entry value must produce the complete V1 default contract."""
-    state = ResearchState(research_topic="LangGraph development trends")
+def test_research_state_initializes_canonical_defaults() -> None:
+    """A canonical entry needs no legacy topic field."""
+    state = ResearchState(query="LangGraph development trends")
 
-    assert state.research_topic == "LangGraph development trends"
+    assert state.research_topic == ""
     assert state.state_version == 1
 
-    assert state.query == ""
+    assert state.query == "LangGraph development trends"
     assert state.research_plan is None
     assert state.documents == []
     assert state.findings == []
@@ -35,12 +32,10 @@ def test_research_state_initializes_v1_defaults() -> None:
 
     assert state.retrieved_memory == []
     assert state.memory_ids == []
-    assert state.critic_feedback == []
-    assert state.agent_messages == []
-    assert state.active_agent is None
-    assert state.next_action is None
-    assert state.pending_tasks == []
-    assert state.supervisor_decision is None
+    assert "critic_feedback" not in ResearchState.model_fields
+    assert "agent_messages" not in ResearchState.model_fields
+    assert "supervisor_decision" not in ResearchState.model_fields
+    assert "quality_score" not in ResearchState.model_fields
 
     assert state.plan is None
     assert state.search_results == []
@@ -187,7 +182,5 @@ def test_legacy_checkpoint_payload_is_not_hydrated_with_v1_fields() -> None:
     assert restored.usage == UsageMetrics()
 
 
-def test_research_state_requires_legacy_research_topic() -> None:
-    """The current entry contract still requires research_topic."""
-    with pytest.raises(ValidationError):
-        ResearchState()
+def test_research_state_accepts_empty_canonical_input() -> None:
+    assert ResearchState().query == ""

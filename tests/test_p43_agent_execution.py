@@ -78,7 +78,7 @@ def test_planner_retries_through_shared_contract_and_counts_every_attempt() -> N
     patch = asyncio.run(ResearchPlanner(llm=RunnableLambda(flaky_plan), max_retries=2).plan(state))
 
     assert attempts == 2
-    assert patch["llm_calls"] == 2
+    assert patch["usage"].llm_calls == 2
     assert [detail["success"] for detail in patch["llm_call_details"]] == [False, True]
     assert patch["usage"].llm_calls == 2
     assert patch["execution_context"].operation_calls == 2
@@ -99,7 +99,7 @@ def test_synthesizer_honors_typed_nonretryable_llm_failure(monkeypatch) -> None:
     patch = asyncio.run(ResearchSynthesizer(llm=object(), max_retries=3).synthesize(state))
 
     assert calls == 1
-    assert patch["llm_calls"] == 1
+    assert patch["usage"].llm_calls == 1
     assert patch["llm_call_details"][0]["error_code"] == "llm_provider_error"
     assert patch["llm_call_details"][0].get("retryable") is not True
 
@@ -116,7 +116,7 @@ def test_writer_profile_confirms_sequential_section_llm_critical_path() -> None:
     wall_seconds = perf_counter() - started
     profile = profile_writer_latency(patch["llm_call_details"], wall_seconds=wall_seconds)
 
-    assert patch["llm_calls"] == 3
+    assert patch["usage"].llm_calls == 3
     assert profile.section_attempts == 3
     assert profile.completed_sections == 3
     assert profile.llm_seconds >= 0.05
@@ -195,7 +195,7 @@ def test_writer_bounded_shared_budget_fails_all_or_nothing_without_lost_update()
     patch = asyncio.run(writer.write_report(state))
 
     assert patch["error"] == "报告撰写失败：Run operation budget exhausted"
-    assert patch["llm_calls"] == 1
+    assert patch["usage"].llm_calls == 1
     assert len(patch["llm_call_details"]) == 1
     assert patch["execution_context"].operation_calls == 1
     assert patch["execution_context"].operation_stop_reason == "budget_exhausted"
@@ -254,7 +254,7 @@ def test_writer_budget_exhaustion_preserves_completed_attempt_usage_without_part
     patch = asyncio.run(ReportWriter(llm=RunnableLambda(fake_writer), max_retries=1).write_report(state))
 
     assert patch["error"] == "报告撰写失败：Run operation budget exhausted"
-    assert patch["llm_calls"] == 1
+    assert patch["usage"].llm_calls == 1
     assert len(patch["llm_call_details"]) == 1
     assert patch["execution_context"].operation_stop_reason == "budget_exhausted"
     assert "report" not in patch

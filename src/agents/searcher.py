@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
 
-from src.agents._llm_support import _usage_from_legacy_totals
+from src.agents._llm_support import _usage_from_totals
 from src.callbacks import (
     emit_error,
     emit_extraction_complete,
@@ -353,17 +353,13 @@ class ResearchSearcher:
                 return {
                     "documents": documents,
                     "current_stage": "synthesizing",
-                    "iterations": canonical_iteration(state) + 1,
                     "iteration": canonical_iteration(state) + 1,
-                    "llm_calls": canonical_usage(state).llm_calls + 1,
-                    "total_input_tokens": canonical_usage(state).input_tokens + input_tokens,
-                    "total_output_tokens": canonical_usage(state).output_tokens + output_tokens,
                     "llm_call_details": state.llm_call_details + [call_detail],
-                    "usage": _usage_from_legacy_totals(
+                    "usage": _usage_from_totals(
                         state,
                         llm_calls=canonical_usage(state).llm_calls + 1,
-                        total_input_tokens=canonical_usage(state).input_tokens + input_tokens,
-                        total_output_tokens=canonical_usage(state).output_tokens + output_tokens,
+                        input_tokens=canonical_usage(state).input_tokens + input_tokens,
+                        output_tokens=canonical_usage(state).output_tokens + output_tokens,
                     ),
                 }
 
@@ -374,7 +370,6 @@ class ResearchSearcher:
                     await emit_error(f"搜索失败：{e}")
                     return {
                         "error": f"搜索失败：{e}",
-                        "iterations": canonical_iteration(state) + 1,
                         "iteration": canonical_iteration(state) + 1,
                         **failed_lifecycle_patch(),
                     }
@@ -388,7 +383,6 @@ class ResearchSearcher:
                     await emit_error(f"搜索失败：{search_error}")
                     return {
                         "error": f"搜索失败：{search_error}",
-                        "iterations": canonical_iteration(state) + 1,
                         "iteration": canonical_iteration(state) + 1,
                         **failed_lifecycle_patch(),
                     }
@@ -397,13 +391,12 @@ class ResearchSearcher:
 
         return {
             "error": "搜索失败：已超过最大重试次数",
-            "iterations": canonical_iteration(state) + 1,
             "iteration": canonical_iteration(state) + 1,
             **failed_lifecycle_patch(),
         }
 
     async def _search_with_executor(self, state: ResearchState) -> Dict[str, Any]:
-        """Run deterministic_v2 while preserving the legacy Agent contract."""
+        """Run deterministic_v2 and return canonical state updates."""
         plan = _research_plan(state)
         if not plan:
             await emit_error("没有可用的研究计划")
@@ -569,7 +562,6 @@ class ResearchSearcher:
             await emit_error(f"搜索失败：{error}")
             failure_patch = {
                 "error": f"搜索失败：{error}",
-                "iterations": canonical_iteration(state) + 1,
                 "iteration": canonical_iteration(state) + 1,
                 **failed_lifecycle_patch(),
             }
@@ -583,7 +575,6 @@ class ResearchSearcher:
             for item in scored_results
             if item["credibility"]["score"] >= config.min_credibility_score
         ]
-        credibility_scores = [item["credibility"] for item in filtered_scored]
         sorted_results = [item["result"] for item in filtered_scored]
         documents = scored_search_results_to_documents(
             (item["result"], item["credibility"])
@@ -636,17 +627,13 @@ class ResearchSearcher:
             ],
             "error": None,
             "current_stage": "synthesizing",
-            "iterations": canonical_iteration(state) + 1,
             "iteration": canonical_iteration(state) + 1,
-            "llm_calls": canonical_usage(state).llm_calls,
-            "total_input_tokens": canonical_usage(state).input_tokens,
-            "total_output_tokens": canonical_usage(state).output_tokens,
             "llm_call_details": state.llm_call_details + [call_detail],
-            "usage": _usage_from_legacy_totals(
+            "usage": _usage_from_totals(
                 state,
                 llm_calls=canonical_usage(state).llm_calls,
-                total_input_tokens=canonical_usage(state).input_tokens,
-                total_output_tokens=canonical_usage(state).output_tokens,
+                input_tokens=canonical_usage(state).input_tokens,
+                output_tokens=canonical_usage(state).output_tokens,
             ).model_copy(
                 update={
                     "tool_calls": canonical_usage(state).tool_calls

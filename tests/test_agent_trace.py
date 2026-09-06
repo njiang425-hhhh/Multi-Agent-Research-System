@@ -187,7 +187,8 @@ def test_graph_wraps_all_four_existing_nodes_with_trace_without_changing_routes(
     node_events = [event for event in result["agent_trace"] if event.event_type == "node"]
     assert [event.node for event in node_events] == ["plan", "search", "synthesize", "write_report"]
     assert all(event.status == "completed" for event in node_events)
-    assert result["final_report"] == "# fake report"
+    assert result["report"].content == "# fake report"
+    assert "final_report" not in result
 
 
 def test_async_sqlite_resume_appends_trace_without_replacing_persisted_attempts(tmp_path) -> None:

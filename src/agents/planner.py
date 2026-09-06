@@ -14,7 +14,7 @@ from src.agents._llm_support import (
     _legacy_attempt_limit_to_retries,
     _llm_failure_patch,
     _llm_patch_totals,
-    _usage_from_legacy_totals,
+    _usage_from_totals,
 )
 from src.callbacks import emit_error, emit_planning_complete, emit_planning_start
 from src.config import config
@@ -136,17 +136,13 @@ class ResearchPlanner:
             "retrieved_memory": retrieved_memory,
             "memory_ids": [item.memory_id for item in retrieved_memory],
             "current_stage": "searching",
-            "iterations": canonical_iteration(state) + 1,
             "iteration": canonical_iteration(state) + 1,
-            "llm_calls": canonical_usage(state).llm_calls + calls,
-            "total_input_tokens": canonical_usage(state).input_tokens + input_tokens,
-            "total_output_tokens": canonical_usage(state).output_tokens + output_tokens,
             "llm_call_details": state.llm_call_details + execution.call_details,
-            "usage": _usage_from_legacy_totals(
+            "usage": _usage_from_totals(
                 state,
                 llm_calls=canonical_usage(state).llm_calls + calls,
-                total_input_tokens=canonical_usage(state).input_tokens + input_tokens,
-                total_output_tokens=canonical_usage(state).output_tokens + output_tokens,
+                input_tokens=canonical_usage(state).input_tokens + input_tokens,
+                output_tokens=canonical_usage(state).output_tokens + output_tokens,
             ),
         }
         if config.research_memory_enabled:

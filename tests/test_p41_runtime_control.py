@@ -32,7 +32,8 @@ def test_fresh_run_captures_serializable_runtime_context_without_touching_legacy
     assert state.execution_context.policy == policy
     assert state.execution_context.delivery_semantics == "at_least_once"
     assert state.terminal_reason is None
-    assert state.research_topic == state.query == "P4.1 topic"
+    assert state.query == "P4.1 topic"
+    assert state.research_topic == ""
 
 
 def test_execution_context_uses_an_absolute_deadline_across_resume_boundaries() -> None:
