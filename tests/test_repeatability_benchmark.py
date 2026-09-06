@@ -52,11 +52,11 @@ def test_repeatability_outputs_observed_runs_derived_dispersion_matched_pairs_an
     assert all(item.data_kind == "observed" for item in result.observed_runs)
     assert result.derived_metrics.data_kind == "derived"
     assert aggregate["enabled"].quality_pass_rate.sample_count == 3
-    assert aggregate["enabled"].quality_metric_pass_rates["grounded_citation"].sample_count == 3
+    assert aggregate["enabled"].quality_metric_pass_rates["evidence_grounding"].sample_count == 3
     assert aggregate["enabled"].provider_error_rate.sample_standard_deviation == 0.0
     assert matched[("enabled", "ai-regulation-overview")].matched_success_round_count == 3
-    assert matched[("enabled", "ai-regulation-overview")].repeated_benefit_rate == 1.0
-    assert assessment["evidence_selector"].status == "sufficient"
+    assert matched[("enabled", "ai-regulation-overview")].repeated_benefit_rate == 0.0
+    assert assessment["evidence_selector"].status == "insufficient"
     assert assessment["writer_optimization"].status == "not_assessable"
     assert assessment["provider_resilience"].status == "not_assessable"
 

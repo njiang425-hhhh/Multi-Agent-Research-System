@@ -101,6 +101,40 @@ class ResearchSearcher:
         }
 
     @staticmethod
+    def _execution_statistics(
+        primary_execution: Any,
+        supplementary_execution: Any | None,
+    ) -> dict[str, Any]:
+        """Project SearchExecutionStats once for usage, trace, and diagnostics.
+
+        ``SearchExecutionStats`` is the authoritative record of real provider
+        attempts.  Other state surfaces consume this projection rather than
+        independently recounting queries, results, or trace events.
+        """
+
+        executions = [primary_execution]
+        if supplementary_execution is not None:
+            executions.append(supplementary_execution)
+        stats = [execution.stats for execution in executions]
+        search_calls = sum(item.search_calls for item in stats)
+        extract_calls = sum(item.extract_calls for item in stats)
+        return {
+            "kind": "search_execution",
+            "search_calls": search_calls,
+            "extract_calls": extract_calls,
+            "tool_calls": search_calls + extract_calls,
+            "failed_calls": sum(item.failed_calls for item in stats),
+            "search_retries": sum(item.search_retries for item in stats),
+            "extract_retries": sum(item.extract_retries for item in stats),
+            "partial": any(execution.partial for execution in executions),
+            "tool_invocations": [
+                invocation
+                for item in stats
+                for invocation in item.invocation_records
+            ],
+        }
+
+    @staticmethod
     def _runtime_allows_adaptive_search(
         execution_context: Any,
     ) -> tuple[bool, str | None]:
@@ -559,6 +593,7 @@ class ResearchSearcher:
         for query in plan.search_queries:
             query.completed = True
 
+        execution_statistics = self._execution_statistics(execution, supplementary_execution)
         call_detail = {
             "agent": "ResearchSearcher",
             "operation": "deterministic_search",
@@ -568,9 +603,9 @@ class ResearchSearcher:
             "duration": execution.stats.elapsed_seconds,
             "results_count": len(sorted_results),
             "original_results_count": len(search_results),
-            "search_calls": execution.stats.search_calls,
-            "extract_calls": execution.stats.extract_calls,
-            "partial": execution.partial,
+            "search_calls": execution_statistics["search_calls"],
+            "extract_calls": execution_statistics["extract_calls"],
+            "partial": execution_statistics["partial"],
             "memory_hint_count": len(memory_hints),
             "memory_hint_source_urls": [
                 url
@@ -579,7 +614,7 @@ class ResearchSearcher:
             ][: config.research_memory_search_hint_limit],
             # Preserve the runtime's per-attempt records for Agent Trace. This
             # is metadata only; legacy LLM totals remain unchanged.
-            "tool_invocations": execution.stats.invocation_records,
+            "tool_invocations": execution_statistics["tool_invocations"],
         }
 
         logger.info(
@@ -591,7 +626,14 @@ class ResearchSearcher:
             "documents": documents,
             "retrieved_memory": retrieved_memory,
             "memory_ids": [item.memory_id for item in retrieved_memory],
-            "search_diagnostics": state.search_diagnostics + [adaptive_diagnostic],
+            "search_diagnostics": state.search_diagnostics + [
+                {
+                    key: value
+                    for key, value in execution_statistics.items()
+                    if key != "tool_invocations"
+                },
+                adaptive_diagnostic,
+            ],
             "error": None,
             "current_stage": "synthesizing",
             "iterations": canonical_iteration(state) + 1,
@@ -605,6 +647,11 @@ class ResearchSearcher:
                 llm_calls=canonical_usage(state).llm_calls,
                 total_input_tokens=canonical_usage(state).input_tokens,
                 total_output_tokens=canonical_usage(state).output_tokens,
+            ).model_copy(
+                update={
+                    "tool_calls": canonical_usage(state).tool_calls
+                    + execution_statistics["tool_calls"],
+                }
             ),
         }
         if config.research_memory_enabled:

@@ -36,8 +36,8 @@ REFERENCE_CALIBRATION_DATASET = CalibrationDataset(
             ),
             reference_sources=[_ONE, _TWO],
             expected=ReferenceQualityExpectation(
-                metric_statuses={name: "passed" for name in ("source_coverage", "grounded_citation", "report_completeness")},
-                distinct_source_count=2, grounded_citation_count=2, report_section_count=2,
+                metric_statuses={name: "passed" for name in ("source_coverage", "citation_integrity", "report_completeness")},
+                distinct_source_count=2, citation_marker_count=2, report_section_count=2,
                 rationale="Two distinct reference URLs are cited and both are URL-grounded; the report meets structural minimums.",
             ),
         ),
@@ -52,8 +52,8 @@ REFERENCE_CALIBRATION_DATASET = CalibrationDataset(
             ),
             reference_sources=[_ONE],
             expected=ReferenceQualityExpectation(
-                metric_statuses={"source_coverage": "failed", "grounded_citation": "passed", "report_completeness": "passed"},
-                distinct_source_count=1, grounded_citation_count=1, report_section_count=1,
+                metric_statuses={"source_coverage": "failed", "citation_integrity": "passed", "report_completeness": "passed"},
+                distinct_source_count=1, citation_marker_count=1, report_section_count=1,
                 rationale="One valid provenance-grounded source cannot satisfy a two-source coverage requirement.",
             ),
         ),
@@ -68,8 +68,8 @@ REFERENCE_CALIBRATION_DATASET = CalibrationDataset(
             ),
             reference_sources=[_ONE],
             expected=ReferenceQualityExpectation(
-                metric_statuses={"source_coverage": "passed", "grounded_citation": "failed", "report_completeness": "passed"},
-                distinct_source_count=1, grounded_citation_count=1, report_section_count=1,
+                metric_statuses={"source_coverage": "passed", "citation_integrity": "failed", "report_completeness": "passed"},
+                distinct_source_count=1, citation_marker_count=1, report_section_count=1,
                 rationale="The fixture includes one valid URL grounding and one report URL without matching Evidence provenance.",
             ),
         ),
@@ -84,8 +84,8 @@ REFERENCE_CALIBRATION_DATASET = CalibrationDataset(
             ),
             reference_sources=[_ONE],
             expected=ReferenceQualityExpectation(
-                metric_statuses={"source_coverage": "passed", "grounded_citation": "passed", "report_completeness": "failed"},
-                distinct_source_count=1, grounded_citation_count=1, report_section_count=1,
+                metric_statuses={"source_coverage": "passed", "citation_integrity": "passed", "report_completeness": "failed"},
+                distinct_source_count=1, citation_marker_count=1, report_section_count=1,
                 rationale="The report maintains URL provenance but has only one short section, so completeness must fail.",
             ),
         ),

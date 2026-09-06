@@ -42,7 +42,13 @@ def canonical_query(state: ResearchState | Mapping[str, Any]) -> str:
 def canonical_plan(state: ResearchState | Mapping[str, Any]) -> ResearchPlan | None:
     """Return the canonical plan with an explicit legacy fallback."""
 
-    return _read(state, "research_plan", None) or _read(state, "plan", None)
+    value = _read(state, "research_plan", None) or _read(state, "plan", None)
+    if value is None or isinstance(value, ResearchPlan):
+        return value
+    try:
+        return ResearchPlan.model_validate(value)
+    except Exception:
+        return None
 
 
 def canonical_iteration(state: ResearchState | Mapping[str, Any]) -> int:

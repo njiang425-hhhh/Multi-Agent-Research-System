@@ -20,7 +20,12 @@ from src.evaluation.snapshot import build_evaluation_snapshot
 
 
 CaseRunner = Callable[[EvaluationCase], Any | Awaitable[Any]]
-_QUALITY_METRIC_NAMES = ("source_coverage", "grounded_citation", "report_completeness")
+_QUALITY_METRIC_NAMES = (
+    "source_coverage",
+    "citation_integrity",
+    "evidence_grounding",
+    "report_completeness",
+)
 
 
 def _regression_summary(dataset: EvaluationDataset, results: list) -> RegressionEvaluationSummary:

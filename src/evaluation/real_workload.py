@@ -27,7 +27,12 @@ from src.evaluation.evidence_benchmark import (
 
 
 REAL_WORKLOAD_BENCHMARK_VERSION = "p5.3.v1"
-_QUALITY_METRIC_NAMES = ("source_coverage", "grounded_citation", "report_completeness")
+_QUALITY_METRIC_NAMES = (
+    "source_coverage",
+    "citation_integrity",
+    "evidence_grounding",
+    "report_completeness",
+)
 _NODE_NAMES = ("plan", "search", "synthesize", "write_report")
 _SENSITIVE_ERROR_PATTERN = re.compile(r"(?i)(api[_-]?key|authorization|token|secret)\s*[:=]\s*\S+")
 _MISSING = object()
@@ -92,11 +97,12 @@ class RealWorkloadCaseQuality(BaseModel):
     case_id: str
     evidence_mode: EvidenceBenchmarkMode
     source_coverage: str
-    grounded_citation: str
+    citation_integrity: str
+    evidence_grounding: str
     report_completeness: str
     overall_quality_pass: bool
     evidence_adopted: bool
-    grounded_citation_count: int = 0
+    evidence_supported_finding_count: int = 0
 
 
 class ModeSLOSummary(BaseModel):
@@ -111,7 +117,7 @@ class ModeSLOSummary(BaseModel):
     provider_failure_rate: float = 0.0
     writer_latency_fraction: float | None = None
     evidence_adoption_rate: float = 0.0
-    grounded_citation_total: int = 0
+    evidence_supported_finding_total: int = 0
     partial_case_count: int = 0
     failure_case_count: int = 0
 
@@ -308,14 +314,15 @@ def _quality_records(
                     case_id=str(evaluation.case_id),
                     evidence_mode=mode_result.mode,
                     source_coverage=statuses["source_coverage"],
-                    grounded_citation=statuses["grounded_citation"],
+                    citation_integrity=statuses["citation_integrity"],
+                    evidence_grounding=statuses["evidence_grounding"],
                     report_completeness=statuses["report_completeness"],
                     overall_quality_pass=all(status == "passed" for status in statuses.values()),
                     evidence_adopted=(
                         observation.evidence_diagnostics_status in {"completed", "partial"}
                         and observation.evidence_record_count > 0
                     ),
-                    grounded_citation_count=evaluation.quality.grounded_citation_count,
+                    evidence_supported_finding_count=evaluation.quality.evidence_supported_finding_count,
                 )
             )
     return records
@@ -367,7 +374,7 @@ def _slo_summaries(
                 if total_seconds > 0
                 else None,
                 evidence_adoption_rate=mode_result.adoption.adoption_rate,
-                grounded_citation_total=sum(item.grounded_citation_count for item in mode_quality),
+                evidence_supported_finding_total=sum(item.evidence_supported_finding_count for item in mode_quality),
                 partial_case_count=sum(item.reliability.partial_observed for item in mode_observations),
                 failure_case_count=sum(item.reliability.failure_observed for item in mode_observations),
             )
@@ -628,7 +635,7 @@ def render_benchmark_report(result: RealWorkloadBenchmarkResult) -> str:
                 failure=item.provider_failure_rate,
                 writer=f"{item.writer_latency_fraction:.3f}" if item.writer_latency_fraction is not None else "-",
                 adoption=item.evidence_adoption_rate,
-                grounded=item.grounded_citation_total,
+                grounded=item.evidence_supported_finding_total,
             )
         )
     lines.extend(["", "## Derived Evidence comparison", ""])

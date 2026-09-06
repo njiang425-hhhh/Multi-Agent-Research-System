@@ -9,7 +9,7 @@ from typing import Any, Mapping, Sequence
 from src.evaluation.contracts import EvaluationCase, EvaluationDataset, EvaluationSnapshot
 
 
-EVALUATION_SNAPSHOT_VERSION = "p5.1.v1"
+EVALUATION_SNAPSHOT_VERSION = "p5.2.v1"
 EVALUATION_METRIC_NAMES = (
     "run_completion",
     "trace_completeness",
@@ -17,7 +17,8 @@ EVALUATION_METRIC_NAMES = (
     "research_coverage",
     "report_structure",
     "source_coverage",
-    "grounded_citation",
+    "citation_integrity",
+    "evidence_grounding",
     "report_completeness",
     "failure_signals",
 )

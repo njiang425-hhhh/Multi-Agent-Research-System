@@ -354,7 +354,8 @@ def _case_record(case: ShowcaseCase, state: Any, wall_seconds: float, memory_ena
             "planning_quality": _jsonable(_read(evaluations.get("planning"), "summary", {})),
             "research_coverage": _jsonable(_read(evaluations.get("research_coverage"), "summary", {})),
             "source_coverage": _metric_status(run_evaluation, "source_coverage"),
-            "grounded_citation": _metric_status(run_evaluation, "grounded_citation"),
+            "citation_integrity": _metric_status(run_evaluation, "citation_integrity"),
+            "evidence_grounding": _metric_status(run_evaluation, "evidence_grounding"),
             "report_completeness": _metric_status(run_evaluation, "report_completeness"),
         },
     }
@@ -454,13 +455,13 @@ def render_showcase_summary(result: Mapping[str, Any]) -> str:
         f"- Cases: `{summary['total_cases']}`; completed: `{summary['completed_cases']}`; failed: `{summary['failed_cases']}`",
         f"- Adaptive triggered: `{summary['adaptive_triggered_cases']}`; memory enabled cases: `{summary['memory_enabled_cases']}`",
         "",
-        "| Case | Category | Status | Wall s | Adaptive | Memory retrieved | Source | Grounded citation | Report |",
-        "|---|---|---|---:|---|---:|---|---|---|",
+        "| Case | Category | Status | Wall s | Adaptive | Memory retrieved | Source | Citation integrity | Evidence grounding | Report |",
+        "|---|---|---|---:|---|---:|---|---|---|---|",
     ]
     for item in result["cases"]:
         metrics = item["core_metrics"]
         lines.append(
-            "| {case} | {category} | {status} | {wall:.3f} | {adaptive} | {memory} | {source} | {citation} | {report} |".format(
+            "| {case} | {category} | {status} | {wall:.3f} | {adaptive} | {memory} | {source} | {citation} | {grounding} | {report} |".format(
                 case=item["case"]["case_id"],
                 category=item["case"]["category"],
                 status=item["status"],
@@ -468,7 +469,8 @@ def render_showcase_summary(result: Mapping[str, Any]) -> str:
                 adaptive=item["adaptive"]["outcome"],
                 memory=item["memory"]["retrieved_count"],
                 source=metrics["source_coverage"],
-                citation=metrics["grounded_citation"],
+                citation=metrics["citation_integrity"],
+                grounding=metrics["evidence_grounding"],
                 report=metrics["report_completeness"],
             )
         )

@@ -16,8 +16,10 @@ def _state(calibration_id: str):
     sections = [{"title": "Summary", "sources": report_urls[:1]}]
     if calibration_id == "grounded-complete":
         sections.append({"title": "Details", "sources": report_urls[1:]})
+    for index, section in enumerate(sections, 1):
+        section["content"] = f"Reference-backed content [{index}]."
     report_text = "# Calibration report\n\n" + "\n\n".join(
-        f"## {section['title']}\n\n" + ("Reference-backed content. " * 8)
+        f"## {section['title']}\n\n{section['content']} " + ("Reference-backed content. " * 8)
         for section in sections
     )
     return {

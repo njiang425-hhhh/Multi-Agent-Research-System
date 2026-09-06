@@ -112,7 +112,7 @@ def _writer_llm_seconds(state: Any) -> float:
 
 
 def _quality_statuses(evaluation: Any) -> dict[str, str]:
-    names = {"source_coverage", "grounded_citation", "report_completeness"}
+    names = {"source_coverage", "citation_integrity", "report_completeness"}
     return {
         metric.name: metric.status
         for metric in evaluation.metrics

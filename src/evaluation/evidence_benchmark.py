@@ -28,7 +28,12 @@ DEFAULT_EVIDENCE_BENCHMARK_MODES: tuple[EvidenceBenchmarkMode, ...] = (
     "enabled",
     "partial",
 )
-_QUALITY_METRIC_NAMES = ("source_coverage", "grounded_citation", "report_completeness")
+_QUALITY_METRIC_NAMES = (
+    "source_coverage",
+    "citation_integrity",
+    "evidence_grounding",
+    "report_completeness",
+)
 _ADOPTED_DIAGNOSTIC_STATUSES = frozenset({"completed", "partial"})
 _MISSING = object()
 
@@ -74,7 +79,7 @@ class EvidenceValueCaseDelta(BaseModel):
     scenario: str
     tags: list[str] = Field(default_factory=list)
     quality_pass_delta: int
-    grounded_citation_delta: int
+    evidence_supported_finding_delta: int
     evidence_record_delta: int
     latency_seconds_delta: float | None = None
     total_tokens_delta: int | None = None
@@ -198,7 +203,7 @@ def _adoption_summary(
         eligible_cases += 1
         if status in _ADOPTED_DIAGNOSTIC_STATUSES and evidence_count > 0:
             adopted_cases += 1
-        if result.quality.grounded_citation_count > 0:
+        if result.quality.evidence_supported_finding_count > 0:
             evidence_backed_reports += 1
     return EvidenceAdoptionSummary(
         eligible_cases=eligible_cases,
@@ -273,8 +278,8 @@ def _case_delta(
         scenario=case.scenario,
         tags=list(case.tags),
         quality_pass_delta=quality_pass_delta,
-        grounded_citation_delta=(
-            target.quality.grounded_citation_count - baseline.quality.grounded_citation_count
+        evidence_supported_finding_delta=(
+            target.quality.evidence_supported_finding_count - baseline.quality.evidence_supported_finding_count
         ),
         evidence_record_delta=target.coverage.evidence - baseline.coverage.evidence,
         latency_seconds_delta=(

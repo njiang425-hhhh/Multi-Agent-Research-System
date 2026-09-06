@@ -23,7 +23,12 @@ from src.evaluation.real_workload import (
 
 
 REPEATABILITY_BENCHMARK_VERSION = "p6.repeatability.v1"
-_QUALITY_NAMES = ("source_coverage", "grounded_citation", "report_completeness")
+_QUALITY_NAMES = (
+    "source_coverage",
+    "citation_integrity",
+    "evidence_grounding",
+    "report_completeness",
+)
 
 
 class DispersionSummary(BaseModel):
@@ -94,7 +99,7 @@ class MatchedCrossRoundComparison(BaseModel):
     matched_success_round_count: int = 0
     matched_success_rate: float = 0.0
     quality_pass_delta: DispersionSummary = Field(default_factory=DispersionSummary)
-    grounded_citation_pass_delta: DispersionSummary = Field(default_factory=DispersionSummary)
+    evidence_grounding_pass_delta: DispersionSummary = Field(default_factory=DispersionSummary)
     observed_wall_latency_delta_seconds: DispersionSummary = Field(default_factory=DispersionSummary)
     value_observed_round_count: int = 0
     repeated_benefit_rate: float | None = None
@@ -298,7 +303,7 @@ def _matched_comparisons(
                 delta = target_count - baseline_count
                 quality_deltas.append(delta)
                 citation_deltas.append(
-                    int(target_quality.grounded_citation == "passed") - int(baseline_quality.grounded_citation == "passed")
+                    int(target_quality.evidence_grounding == "passed") - int(baseline_quality.evidence_grounding == "passed")
                 )
                 wall_deltas.append(
                     target_observation.performance.total_wall_latency_seconds
@@ -315,7 +320,7 @@ def _matched_comparisons(
                     matched_success_round_count=matched,
                     matched_success_rate=_round(matched / len(runs)) if runs else 0.0,
                     quality_pass_delta=_dispersion(quality_deltas),
-                    grounded_citation_pass_delta=_dispersion(citation_deltas),
+                    evidence_grounding_pass_delta=_dispersion(citation_deltas),
                     observed_wall_latency_delta_seconds=_dispersion(wall_deltas),
                     value_observed_round_count=benefit_count,
                     repeated_benefit_rate=_round(benefit_count / matched) if matched else None,
@@ -358,7 +363,7 @@ def _assessments(
         if item.matched_success_rate >= criteria.min_matched_success_rate
         and item.repeated_benefit_rate is not None
         and item.repeated_benefit_rate >= criteria.min_repeated_benefit_rate
-        and (item.grounded_citation_pass_delta.mean or 0.0) > 0
+        and (item.evidence_grounding_pass_delta.mean or 0.0) > 0
     ]
     evidence_stable = any(
         (by_mode[item.evidence_mode].quality_pass_rate.sample_standard_deviation or 0.0)
@@ -546,7 +551,7 @@ def render_repeatability_report(result: RepeatabilityBenchmarkResult) -> str:
         ]
     )
     for item in result.derived_metrics.evidence_value_aggregates:
-        grounded = item.quality_metric_pass_rate_deltas["grounded_citation"]
+        grounded = item.quality_metric_pass_rate_deltas["evidence_grounding"]
         wall = item.observed_wall_latency_delta_seconds
         def present_delta(summary: DispersionSummary) -> str:
             if summary.mean is None:
@@ -560,7 +565,7 @@ def render_repeatability_report(result: RepeatabilityBenchmarkResult) -> str:
         )
     lines.extend(["", "## Derived cross-round matched comparison", "", "| Mode | Case | Matched rounds | Grounded pass delta mean | Wall delta mean (s) | Repeated benefit rate |", "|---|---|---:|---:|---:|---:|"])
     for item in result.derived_metrics.matched_cross_round_comparisons:
-        lines.append(f"| {item.evidence_mode} | {item.case_id} | {item.matched_success_round_count}/{item.eligible_round_count} | {item.grounded_citation_pass_delta.mean if item.grounded_citation_pass_delta.mean is not None else '-'} | {item.observed_wall_latency_delta_seconds.mean if item.observed_wall_latency_delta_seconds.mean is not None else '-'} | {item.repeated_benefit_rate if item.repeated_benefit_rate is not None else '-'} |")
+        lines.append(f"| {item.evidence_mode} | {item.case_id} | {item.matched_success_round_count}/{item.eligible_round_count} | {item.evidence_grounding_pass_delta.mean if item.evidence_grounding_pass_delta.mean is not None else '-'} | {item.observed_wall_latency_delta_seconds.mean if item.observed_wall_latency_delta_seconds.mean is not None else '-'} | {item.repeated_benefit_rate if item.repeated_benefit_rate is not None else '-'} |")
     lines.extend(["", "## Derived initiative assessments", ""])
     for item in result.derived_metrics.initiative_assessments:
         lines.append(f"- `{item.initiative}`: **{item.status}** — {'; '.join(item.unmet_criteria) or 'all declared criteria met'}")

@@ -194,7 +194,14 @@ def test_both_searcher_success_paths_double_write_usage(monkeypatch) -> None:
     deterministic_searcher.search_executor = _FakeSearchExecutor()
     deterministic_patch = asyncio.run(deterministic_searcher.search(deterministic_state))
 
-    _assert_usage_matches_legacy(deterministic_patch, deterministic_state)
+    usage = deterministic_patch["usage"]
+    assert usage.llm_calls == deterministic_patch["llm_calls"]
+    assert usage.input_tokens == deterministic_patch["total_input_tokens"]
+    assert usage.output_tokens == deterministic_patch["total_output_tokens"]
+    assert usage.total_tokens == usage.input_tokens + usage.output_tokens
+    assert usage.tool_calls == deterministic_state.usage.tool_calls + 2
+    assert usage.latency_seconds == deterministic_state.usage.latency_seconds
+    assert usage.estimated_cost == deterministic_state.usage.estimated_cost
     assert deterministic_patch["llm_calls"] == deterministic_state.llm_calls
     assert len(deterministic_patch["llm_call_details"]) == len(deterministic_state.llm_call_details) + 1
 

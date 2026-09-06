@@ -66,7 +66,7 @@ def _action_request(*, scope: str = "approval") -> ActionExecutionRequest:
             scope=scope,
             selectors={"review": "quality-conflict"},
             targetable_deficit=False,
-            deficit_metric="grounded_citation",
+            deficit_metric="citation_integrity",
             triggering_signal_ids=["signal-review"],
         ),
         authorization_id="human-auth-001",

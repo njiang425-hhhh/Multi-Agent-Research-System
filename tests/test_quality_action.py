@@ -110,7 +110,7 @@ def test_runtime_budget_stop_has_priority_over_derived_quality_failure() -> None
 
 
 def test_unavailable_signal_is_not_pass_and_requests_blocked_human_review() -> None:
-    recommendation = recommend_action([_signal("grounded_citation", status="unavailable", value=None)])
+    recommendation = recommend_action([_signal("citation_integrity", status="unavailable", value=None)])
 
     assert recommendation.action == "human_review"
     assert recommendation.status == "blocked"

@@ -16,7 +16,11 @@ from src.evaluation.snapshot import build_evaluation_snapshot
 
 
 CALIBRATION_VERSION = "p6.calibration.v1"
-_QUALITY_METRICS = ("source_coverage", "grounded_citation", "report_completeness")
+_QUALITY_METRICS = (
+    "source_coverage",
+    "citation_integrity",
+    "report_completeness",
+)
 
 
 class ReferenceSource(BaseModel):
@@ -30,13 +34,13 @@ class ReferenceSource(BaseModel):
 class ReferenceQualityExpectation(BaseModel):
     """Known structural/provenance signals expected from one reference fixture.
 
-    ``grounded_citation`` intentionally means URL/provenance grounding only. It
+    Citation integrity only asserts structural citation/document provenance. It
     does not assert factual correctness or semantic entailment of a claim.
     """
 
     metric_statuses: dict[str, Literal["passed", "failed", "unavailable"]]
     distinct_source_count: int = Field(ge=0)
-    grounded_citation_count: int = Field(ge=0)
+    citation_marker_count: int = Field(ge=0)
     report_section_count: int = Field(ge=0)
     rationale: str = Field(min_length=1)
 
@@ -125,7 +129,7 @@ def _signals(case: CalibrationCase, evaluation: RunEvaluationResult) -> list[Cal
         )
     for name, observed in {
         "distinct_source_count": evaluation.quality.distinct_source_count,
-        "grounded_citation_count": evaluation.quality.grounded_citation_count,
+        "citation_marker_count": evaluation.quality.citation_marker_count,
         "report_section_count": evaluation.report.section_count,
     }.items():
         expected = getattr(case.expected, name)

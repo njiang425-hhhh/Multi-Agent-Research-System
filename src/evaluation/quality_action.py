@@ -177,7 +177,7 @@ def _metric_scope(name: str) -> SignalScope:
         return "facet"
     if name in {"source_coverage"}:
         return "document"
-    if name in {"grounded_citation"}:
+    if name in {"citation_integrity", "evidence_grounding"}:
         return "claim"
     if name in _REPORT_METRICS:
         return "report"

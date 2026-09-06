@@ -148,15 +148,16 @@ def test_benchmark_compares_modes_with_same_cases_rubric_and_read_only_inputs() 
     assert result.benchmark_snapshot.configuration["evidence_modes"] == ["disabled", "enabled", "partial"]
     assert by_mode["disabled"].quality_metric_pass_rates == {
         "source_coverage": 1.0,
-        "grounded_citation": 0.0,
+        "citation_integrity": 0.0,
+        "evidence_grounding": 0.0,
         "report_completeness": 1.0,
     }
     assert by_mode["disabled"].adoption.adoption_rate == 0.0
     assert by_mode["enabled"].adoption.adoption_rate == 1.0
     assert by_mode["enabled"].adoption.evidence_backed_report_cases == 5
     assert by_mode["partial"].adoption.diagnostics_status_counts["partial"] == 5
-    assert by_mode["partial"].quality_metric_pass_rates["grounded_citation"] == 1.0
-    assert by_comparison["enabled"].quality_metric_pass_rate_deltas["grounded_citation"] == 1.0
+    assert by_mode["partial"].quality_metric_pass_rates["evidence_grounding"] == 1.0
+    assert by_comparison["enabled"].quality_metric_pass_rate_deltas["evidence_grounding"] == 1.0
     assert by_comparison["enabled"].adoption_rate_delta == 1.0
     assert by_comparison["enabled"].total_latency_seconds_delta == 2.5
     assert by_comparison["enabled"].total_tokens_delta == 40

@@ -89,7 +89,7 @@ def _authorization(
             node="human_review",
             scope="approval",
             selectors={"review": "quality-conflict"},
-            deficit_metric="grounded_citation",
+            deficit_metric="citation_integrity",
             triggering_signal_ids=["fake:review"],
         ),
     }

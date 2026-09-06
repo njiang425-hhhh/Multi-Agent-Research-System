@@ -17,7 +17,16 @@ class ResearchQualityRubric(BaseModel):
     """Case-level, deterministic minimums for observable research quality."""
 
     min_distinct_sources: int = Field(default=1, ge=0)
-    min_grounded_citations: int = Field(default=1, ge=0)
+    min_grounded_citations: int = Field(
+        default=1,
+        ge=0,
+        description="Deprecated P5.1 URL-provenance threshold; not used by Phase 3A metrics.",
+    )
+    min_evidence_supported_findings: int | None = Field(
+        default=None,
+        ge=0,
+        description="Optional Evidence-grounding threshold for supported Findings.",
+    )
     min_report_sections: int = Field(default=1, ge=0)
     min_report_characters: int = Field(default=1, ge=0)
     require_top_level_heading: bool = True
@@ -33,8 +42,8 @@ class RegressionThresholds(BaseModel):
 class EvaluationSnapshot(BaseModel):
     """Versioned, deterministic basis for one comparable evaluation result."""
 
-    snapshot_version: str = "p5.1.v1"
-    evaluator_version: str = "p5.1.v1"
+    snapshot_version: str = "p5.2.v1"
+    evaluator_version: str = "p5.2.v1"
     dataset_id: str | None = None
     dataset_version: str | None = None
     dataset_content_fingerprint: str | None = None
@@ -113,21 +122,25 @@ class ReportEvaluationSummary(BaseModel):
 
 
 class ResearchQualitySummary(BaseModel):
-    """Read-only inputs used by the P5.1 quality rubric metrics."""
+    """Read-only citation-integrity and Evidence-grounding observations."""
 
     rubric: ResearchQualityRubric = Field(default_factory=ResearchQualityRubric)
     distinct_source_count: int = 0
     cited_source_count: int = 0
-    grounded_citation_count: int = 0
-    ungrounded_citation_count: int = 0
+    citation_marker_count: int = 0
+    invalid_citation_count: int = 0
+    citation_map_mismatch_count: int = 0
+    section_citation_mismatch_count: int = 0
+    evidence_supported_finding_count: int = 0
+    evidence_contradicted_finding_count: int = 0
+    evidence_unsupported_finding_count: int = 0
     report_character_count: int = 0
-
 
 class RunEvaluationResult(BaseModel):
     """Evaluation of one already-produced run state; never a State patch."""
 
     evaluation_id: str = Field(default_factory=lambda: str(uuid4()))
-    evaluator_version: str = "p5.1.v1"
+    evaluator_version: str = "p5.2.v1"
     evaluation_snapshot: EvaluationSnapshot | None = None
     dataset_id: str | None = None
     dataset_version: str | None = None
@@ -166,7 +179,7 @@ class RegressionEvaluationSummary(BaseModel):
 class OfflineEvaluationResult(BaseModel):
     """Serializable suite-level result suitable for later comparison."""
 
-    evaluator_version: str = "p5.1.v1"
+    evaluator_version: str = "p5.2.v1"
     evaluation_snapshot: EvaluationSnapshot | None = None
     dataset_id: str
     dataset_version: str

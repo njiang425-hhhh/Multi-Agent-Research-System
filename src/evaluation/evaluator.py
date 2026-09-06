@@ -24,9 +24,10 @@ from src.state_compat import canonical_report_text
 
 
 EXPECTED_COMPLETED_NODES = ("plan", "search", "synthesize", "write_report")
-EVALUATOR_VERSION = "p5.1.v1"
+EVALUATOR_VERSION = "p5.2.v1"
 _MISSING = object()
 _URL_PATTERN = re.compile(r"https?://[^\s<>\]\)]+")
+_CITATION_PATTERN = re.compile(r"\[(\d+)\]")
 
 
 def _read(value: Any, field: str, default: Any = _MISSING) -> Any:
@@ -200,6 +201,181 @@ def _report_cited_urls(state: Any, report: Any, final_report: Any) -> set[str]:
     return _source_urls(values)
 
 
+def _citation_numbers(text: Any) -> list[int]:
+    return [int(value) for value in _CITATION_PATTERN.findall(str(text or ""))]
+
+
+def _report_sections(state: Any, report: Any) -> list[Any]:
+    sections = _list(report, "sections") if report is not _MISSING else None
+    if sections is None:
+        sections = _list(state, "report_sections")
+    return list(sections or ())
+
+
+def _citation_integrity_summary(
+    state: Any,
+    *,
+    report: Any,
+    final_report: Any,
+    documents: list[Any],
+) -> tuple[ResearchQualitySummary, EvaluationMetric]:
+    """Check the report's citation map without making a factuality claim."""
+
+    document_urls = [str(_read(document, "uri", "") or "").strip() for document in documents]
+    marker_numbers = _citation_numbers(final_report)
+    invalid_numbers = [number for number in marker_numbers if number < 1 or number > len(document_urls)]
+    report_citations = _list(report, "citations") if report is not _MISSING else None
+    if report_citations is None:
+        report_citations = []
+    citation_map_mismatches = sum(
+        1
+        for index, url in enumerate(document_urls)
+        if index >= len(report_citations) or str(report_citations[index] or "").strip() != url
+    ) + max(0, len(report_citations) - len(document_urls))
+
+    section_mismatches = 0
+    for section in _report_sections(state, report):
+        expected_sources: list[str] = []
+        for number in _citation_numbers(_read(section, "content", "")):
+            if 1 <= number <= len(document_urls):
+                url = document_urls[number - 1]
+                if url not in expected_sources:
+                    expected_sources.append(url)
+        actual_sources = [str(url or "").strip() for url in (_list(section, "sources") or ())]
+        if actual_sources != expected_sources:
+            section_mismatches += 1
+
+    # A bibliography map with no in-text citations is not an actual citation
+    # map.  This catches Writer fallback prose that only appends references.
+    if document_urls and not marker_numbers:
+        citation_map_mismatches += 1
+
+    summary = ResearchQualitySummary(
+        distinct_source_count=len(set(document_urls)),
+        cited_source_count=len({document_urls[number - 1] for number in marker_numbers if 1 <= number <= len(document_urls)}),
+        citation_marker_count=len(marker_numbers),
+        invalid_citation_count=len(invalid_numbers),
+        citation_map_mismatch_count=citation_map_mismatches,
+        section_citation_mismatch_count=section_mismatches,
+        report_character_count=len(str(final_report or "")) if final_report is not None else 0,
+    )
+    if final_report is None:
+        return summary, _metric(
+            "citation_integrity", "unavailable", value=summary.model_dump(),
+            reason="report fields are absent; citation map cannot be established",
+        )
+    if not documents:
+        return summary, _metric(
+            "citation_integrity", "failed", value=summary.model_dump(),
+            reason="report has no canonical Documents for its citation map",
+        )
+    if invalid_numbers or citation_map_mismatches or section_mismatches:
+        return summary, _metric(
+            "citation_integrity", "failed", value=summary.model_dump(),
+            reason="citation numbers, bibliography map, or section source URLs do not match canonical Documents",
+        )
+    return summary, _metric("citation_integrity", "passed", value=summary.model_dump())
+
+
+def _evidence_grounding_metric(
+    state: Any,
+    *,
+    documents: list[Any],
+    findings: list[Any],
+    base_summary: ResearchQualitySummary,
+    case: EvaluationCase | None,
+) -> tuple[ResearchQualitySummary, EvaluationMetric]:
+    """Evaluate explicit Evidence-to-Finding links when Evidence actually ran.
+
+    This verifies stored provenance and support/contradiction relationships. It
+    is deliberately not a semantic factuality or entailment guarantee.
+    """
+
+    diagnostics = _read(state, "evidence_diagnostics", _MISSING)
+    status = _read(diagnostics, "status", None) if diagnostics is not _MISSING else None
+    if status in {None, "disabled", "not_run"}:
+        return base_summary, _metric(
+            "evidence_grounding", "unavailable", value=base_summary.model_dump(),
+            reason="Evidence is disabled or was not run for this result",
+        )
+    if status == "failed":
+        return base_summary, _metric(
+            "evidence_grounding", "unavailable", value=base_summary.model_dump(),
+            reason="Evidence execution failed; no complete grounding observation is available",
+        )
+
+    document_by_id = {
+        str(_read(document, "document_id", "")): document
+        for document in documents
+        if _read(document, "document_id", "")
+    }
+    evidence_by_id = {
+        str(_read(item, "evidence_id", "")): item
+        for item in (_list(state, "evidence") or ())
+        if _read(item, "evidence_id", "")
+    }
+
+    def valid_evidence(item: Any, source_ids: set[str], relation: str) -> bool:
+        document_id = str(_read(item, "document_id", "") or "")
+        document = document_by_id.get(document_id)
+        if document is None or _read(item, "relation", "") != relation:
+            return False
+        if source_ids and document_id not in source_ids:
+            return False
+        if _read(item, "status", "") not in {"grounded", "partial"}:
+            return False
+        if str(_read(item, "source_url", "") or "") != str(_read(document, "uri", "") or ""):
+            return False
+        quote = str(_read(item, "source_quote", "") or "")
+        source_text = str(_read(document, "content", "") or _read(document, "snippet", "") or "")
+        return bool(quote and (not source_text or quote in source_text))
+
+    supported = contradicted = unsupported = 0
+    for finding in findings:
+        source_ids = {str(value) for value in (_list(finding, "source_document_ids") or ()) if value}
+        support_items = [
+            evidence_by_id[item_id]
+            for item_id in (_list(finding, "evidence_refs") or ())
+            if item_id in evidence_by_id
+            and valid_evidence(evidence_by_id[item_id], source_ids, "supports")
+        ]
+        contradiction_items = [
+            evidence_by_id[item_id]
+            for item_id in (_list(finding, "contradictory_evidence_refs") or ())
+            if item_id in evidence_by_id
+            and valid_evidence(evidence_by_id[item_id], source_ids, "contradicts")
+        ]
+        if contradiction_items:
+            contradicted += 1
+        elif support_items:
+            supported += 1
+        else:
+            unsupported += 1
+
+    summary = base_summary.model_copy(
+        update={
+            "evidence_supported_finding_count": supported,
+            "evidence_contradicted_finding_count": contradicted,
+            "evidence_unsupported_finding_count": unsupported,
+        }
+    )
+    if not findings:
+        return summary, _metric(
+            "evidence_grounding", "unavailable", value=summary.model_dump(),
+            reason="Evidence ran but this result has no Findings to evaluate",
+        )
+    rubric = case.quality_rubric if case is not None else ResearchQualityRubric()
+    # ``min_grounded_citations`` belonged to the old URL-provenance metric and
+    # is intentionally not reinterpreted as a finding-support threshold.
+    minimum = rubric.min_evidence_supported_findings or 0
+    if supported < minimum or contradicted or unsupported:
+        return summary, _metric(
+            "evidence_grounding", "failed", value=summary.model_dump(),
+            reason="Findings are unsupported, contradicted, or below the configured Evidence support threshold",
+        )
+    return summary, _metric("evidence_grounding", "passed", value=summary.model_dump())
+
+
 def _quality_metrics(
     state: Any,
     case: EvaluationCase | None,
@@ -209,36 +385,23 @@ def _quality_metrics(
 
     rubric = case.quality_rubric if case is not None else ResearchQualityRubric()
     documents = _list(state, "documents")
-    evidence = _list(state, "evidence")
     report = _read(state, "report", _MISSING)
     final_report = canonical_report_text(state)
-    document_urls = _source_urls([_read(document, "uri", "") for document in documents or ()])
-    document_urls_by_id = {
-        str(_read(document, "document_id", "")): str(_read(document, "uri", "")).strip()
-        for document in documents or ()
-        if _read(document, "document_id", "") and _read(document, "uri", "")
-    }
-    cited_urls = _report_cited_urls(state, report, final_report)
-    grounded_urls = _source_urls(
-        [
-            _read(item, "source_url", "")
-            for item in evidence or ()
-            if _read(item, "status", "grounded") in {"grounded", "partial"}
-            and bool(_read(item, "evidence_id", ""))
-            and bool(_read(item, "source_quote", ""))
-            and _read(item, "source_url", "")
-            == document_urls_by_id.get(str(_read(item, "document_id", "")))
-        ]
+    document_values = list(documents or ())
+    summary, citation_metric = _citation_integrity_summary(
+        state,
+        report=report,
+        final_report=final_report,
+        documents=document_values,
     )
-    grounded_citations = cited_urls & grounded_urls
-    ungrounded_citations = cited_urls - grounded_urls
-    summary = ResearchQualitySummary(
-        rubric=rubric,
-        distinct_source_count=len(document_urls),
-        cited_source_count=len(cited_urls),
-        grounded_citation_count=len(grounded_citations),
-        ungrounded_citation_count=len(ungrounded_citations),
-        report_character_count=len(str(final_report or "")) if final_report is not None else 0,
+    summary = summary.model_copy(update={"rubric": rubric})
+    citation_metric = citation_metric.model_copy(update={"value": summary.model_dump()})
+    summary, evidence_metric = _evidence_grounding_metric(
+        state,
+        documents=document_values,
+        findings=list(_list(state, "findings") or ()),
+        base_summary=summary,
+        case=case,
     )
 
     if documents is None:
@@ -253,27 +416,6 @@ def _quality_metrics(
         )
     else:
         source_metric = _metric("source_coverage", "passed", value=summary.model_dump())
-
-    if evidence is None:
-        citation_metric = _metric(
-            "grounded_citation", "unavailable", value=summary.model_dump(),
-            reason="evidence is absent; grounded citations cannot be established",
-        )
-    elif final_report is None:
-        citation_metric = _metric(
-            "grounded_citation", "unavailable", value=summary.model_dump(),
-            reason="report fields are absent; report citations cannot be established",
-        )
-    elif (
-        summary.grounded_citation_count < rubric.min_grounded_citations
-        or summary.ungrounded_citation_count > 0
-    ):
-        citation_metric = _metric(
-            "grounded_citation", "failed", value=summary.model_dump(),
-            reason="report citations are ungrounded or below the case minimum",
-        )
-    else:
-        citation_metric = _metric("grounded_citation", "passed", value=summary.model_dump())
 
     if final_report is None:
         completeness_metric = _metric(
@@ -292,7 +434,7 @@ def _quality_metrics(
         )
     else:
         completeness_metric = _metric("report_completeness", "passed", value=summary.model_dump())
-    return summary, [source_metric, citation_metric, completeness_metric]
+    return summary, [source_metric, citation_metric, evidence_metric, completeness_metric]
 
 
 def evaluate_run(

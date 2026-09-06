@@ -142,7 +142,7 @@ def test_real_workload_harness_separates_observed_and_derived_data_and_archives(
     assert observations[("partial", "ai-regulation-overview")].reliability.partial_observed is True
     assert observations[("disabled", "search-provider-failure")].reliability.provider_errors[0].source == "llm"
     assert slo["disabled"].success_rate == pytest.approx(5 / 6, abs=1e-6)
-    assert slo["enabled"].quality_pass_rate == pytest.approx(5 / 6, abs=1e-6)
+    assert slo["enabled"].quality_pass_rate == 0.0
     assert slo["enabled"].provider_failure_rate == pytest.approx(1 / 6, abs=1e-6)
     assert slo["enabled"].writer_latency_fraction is not None
     assert result.derived_metrics.evidence_value_comparisons[0]["mode"] == "enabled"

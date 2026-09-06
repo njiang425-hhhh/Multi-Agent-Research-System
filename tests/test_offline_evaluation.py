@@ -50,17 +50,17 @@ def _completed_state():
     first_url = "https://example.com/source-one"
     second_url = "https://example.com/source-two"
     sections = [
-        ReportSection(title="Summary", content="A fake first section", sources=[first_url]),
-        ReportSection(title="Evidence", content="A fake second section", sources=[second_url]),
+        ReportSection(title="Summary", content="A fake first section [1]", sources=[first_url]),
+        ReportSection(title="Evidence", content="A fake second section [2]", sources=[second_url]),
     ]
-    report_text = "# Offline evaluation topic\n\n## Summary\n\n" + ("A fake report. " * 12) + "\n\n## Evidence\n\n" + ("Grounded evidence. " * 8)
+    report_text = "# Offline evaluation topic\n\n## Summary\n\nA fake report [1]. " + ("A fake report. " * 12) + "\n\n## Evidence\n\nGrounded evidence [2]. " + ("Grounded evidence. " * 8)
     return state.model_copy(
         update={
             "status": "completed",
             "current_stage": "complete",
             "documents": [
-                Document(document_id="doc-1", title="Fake source one", uri=first_url),
-                Document(document_id="doc-2", title="Fake source two", uri=second_url),
+                Document(document_id="doc-1", title="Fake source one", uri=first_url, content="Fake quote"),
+                Document(document_id="doc-2", title="Fake source two", uri=second_url, content="Second fake quote"),
             ],
             "evidence": [
                 Evidence(
@@ -83,7 +83,7 @@ def _completed_state():
                 ),
             ],
             "evidence_diagnostics": EvidenceDiagnostics(status="completed", source="p2_documents"),
-            "findings": [Finding(finding_id="finding-1", statement="Fake finding", evidence_refs=["evidence-1", "evidence-2"], status="supported")],
+            "findings": [Finding(finding_id="finding-1", statement="Fake finding", source_document_ids=["doc-1", "doc-2"], evidence_refs=["evidence-1", "evidence-2"], status="supported")],
             "report_sections": sections,
             "final_report": report_text,
             "report": Report(title="Offline evaluation topic", sections=sections, content=report_text, citations=[first_url, second_url], status="completed"),
@@ -118,7 +118,8 @@ def test_evaluator_reads_a_complete_state_and_reports_deterministic_metrics() ->
         "research_coverage": "passed",
         "report_structure": "passed",
         "source_coverage": "passed",
-        "grounded_citation": "passed",
+        "citation_integrity": "passed",
+        "evidence_grounding": "passed",
         "report_completeness": "passed",
         "failure_signals": "passed",
     }
@@ -128,9 +129,9 @@ def test_evaluator_reads_a_complete_state_and_reports_deterministic_metrics() ->
     assert result.coverage.evidence_status == "passed"
     assert result.metadata == {"llm_as_judge": False, "reads_existing_state_only": True}
     assert result.evaluation_snapshot is not None
-    assert result.evaluation_snapshot.snapshot_version == "p5.1.v1"
+    assert result.evaluation_snapshot.snapshot_version == "p5.2.v1"
     assert result.quality.distinct_source_count == 2
-    assert result.quality.grounded_citation_count == 2
+    assert result.quality.evidence_supported_finding_count == 1
     assert state.model_dump(mode="json") == before
     json.dumps(result.model_dump(mode="json"))
 
@@ -191,7 +192,8 @@ def test_fixed_runner_evaluates_every_case_and_aggregates_without_graph_dependen
     assert suite.regression.expected_outcome_match_rate == 1.0
     assert suite.regression.quality_metric_pass_rates == {
         "source_coverage": 1.0,
-        "grounded_citation": 1.0,
+        "citation_integrity": 1.0,
+        "evidence_grounding": 1.0,
         "report_completeness": 1.0,
     }
     json.dumps(suite.model_dump(mode="json"))
@@ -200,13 +202,13 @@ def test_fixed_runner_evaluates_every_case_and_aggregates_without_graph_dependen
 def test_quality_rubric_reports_deterministic_source_citation_and_completeness_failures() -> None:
     state = _completed_state().model_copy(
         update={
-            "documents": [Document(document_id="doc-1", title="Only source", uri="https://example.com/source-one")],
-            "report_sections": [ReportSection(title="Summary", content="Short", sources=["https://example.com/unverified"])],
-            "final_report": "# Short\n\n## Summary\n\nShort",
+            "documents": [Document(document_id="doc-1", title="Only source", uri="https://example.com/source-one", content="Fake quote")],
+            "report_sections": [ReportSection(title="Summary", content="Short [2]", sources=["https://example.com/unverified"])],
+            "final_report": "# Short\n\n## Summary\n\nShort [2]",
             "report": Report(
                 title="Short",
-                sections=[ReportSection(title="Summary", content="Short", sources=["https://example.com/unverified"])],
-                content="# Short\n\n## Summary\n\nShort",
+                sections=[ReportSection(title="Summary", content="Short [2]", sources=["https://example.com/unverified"])],
+                content="# Short\n\n## Summary\n\nShort [2]",
                 citations=["https://example.com/unverified"],
                 status="completed",
             ),
@@ -226,16 +228,15 @@ def test_quality_rubric_reports_deterministic_source_citation_and_completeness_f
     result = evaluate_run(state, case=case)
 
     assert _statuses(result)["source_coverage"] == "failed"
-    assert _statuses(result)["grounded_citation"] == "failed"
+    assert _statuses(result)["citation_integrity"] == "failed"
     assert _statuses(result)["report_completeness"] == "failed"
-    assert result.quality.ungrounded_citation_count == 1
 
 
 def test_partial_case_accepts_validated_partial_evidence_at_its_fixed_lower_threshold() -> None:
     case = next(case for case in FIXED_EVALUATION_DATASET.cases if case.scenario == "partial")
     source_url = "https://example.com/source-one"
-    section = ReportSection(title="Available evidence", content="Partial evidence", sources=[source_url])
-    report_text = "# Partial report\n\n## Available evidence\n\n" + ("Validated partial evidence. " * 4)
+    section = ReportSection(title="Available evidence", content="Partial evidence [1]", sources=[source_url])
+    report_text = "# Partial report\n\n## Available evidence\n\nPartial evidence [1]. " + ("Validated partial evidence. " * 4)
     state = _completed_state().model_copy(
         update={
             "evidence": [
@@ -244,20 +245,28 @@ def test_partial_case_accepts_validated_partial_evidence_at_its_fixed_lower_thre
                     document_id="doc-1",
                     source_url=source_url,
                     claim="Partial fake claim",
-                    source_quote="Partial fake quote",
+                    source_quote="Fake quote",
                     text_source="snippet",
                     relation="supports",
                     status="partial",
                 )
             ],
             "evidence_diagnostics": EvidenceDiagnostics(status="partial", source="p2_documents"),
+            "findings": [
+                Finding(
+                    finding_id="finding-partial",
+                    statement="Partial fake claim",
+                    source_document_ids=["doc-1"],
+                    evidence_refs=["evidence-partial"],
+                )
+            ],
             "report_sections": [section],
             "final_report": report_text,
             "report": Report(
                 title="Partial report",
                 sections=[section],
                 content=report_text,
-                citations=[source_url],
+                citations=[source_url, "https://example.com/source-two"],
                 status="completed",
             ),
         }
@@ -267,7 +276,8 @@ def test_partial_case_accepts_validated_partial_evidence_at_its_fixed_lower_thre
     result = evaluate_run(state, case=case)
 
     assert _statuses(result)["source_coverage"] == "passed"
-    assert _statuses(result)["grounded_citation"] == "passed"
+    assert _statuses(result)["citation_integrity"] == "passed"
+    assert _statuses(result)["evidence_grounding"] == "passed"
     assert _statuses(result)["report_completeness"] == "passed"
     assert state.model_dump(mode="json") == before
 
