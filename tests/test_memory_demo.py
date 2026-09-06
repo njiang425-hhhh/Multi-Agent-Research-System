@@ -8,7 +8,7 @@ import json
 from langchain_core.runnables import RunnableLambda
 
 from src import agents as agents_module
-from src import graph as graph_module
+from src import runner as graph_module
 from src.agents import ResearchPlanner, ResearchSearcher
 from src.memory import ResearchMemoryStore, run_memory_demo
 from src.memory.projection import project_research_memories

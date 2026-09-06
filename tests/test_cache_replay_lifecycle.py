@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 
-from src import graph as graph_module
+from src import runner as graph_module
 
 
 class _FakeCache:

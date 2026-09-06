@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableLambda
 from src import agents as agents_module
 from src.agents import ResearchPlanner, ResearchSearcher
 from src.evidence.config import EvidenceRuntimeConfig
-from src.graph import _create_initial_state
+from src.runner import _create_initial_state
 from src.search.config import SearchConfig
 from src.search.models import SearchExecutionResult, SearchExecutionStats
 from src.state import ResearchPlan, ResearchState, SearchQuery, SearchResult

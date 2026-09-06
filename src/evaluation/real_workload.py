@@ -570,7 +570,7 @@ def manual_deepseek_tavily_runner() -> RealWorkloadRunner:
         # ``run_evidence_value_benchmark`` is intentionally sequential. The
         # process-scoped environment is therefore restored before the next run.
         with _temporary_evidence_mode(mode):
-            from src.graph import run_research
+            from src.runner import run_research
 
             return await run_research(
                 case.query,

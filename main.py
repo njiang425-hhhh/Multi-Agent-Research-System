@@ -6,7 +6,7 @@ from pathlib import Path
 import logging
 
 from src.config import config
-from src.graph import run_research
+from src.runner import run_research
 from src.state_compat import canonical_documents, canonical_findings, canonical_iteration, canonical_plan, canonical_report, canonical_report_text
 
 logging.basicConfig(

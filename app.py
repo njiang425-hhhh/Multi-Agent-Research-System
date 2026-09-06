@@ -7,8 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from src.config import config
-from src.graph import create_research_graph
-from src.runtime_lifecycle import apply_terminal_lifecycle, create_new_run_state, start_run
+from src.runner import ResearchRunner
 from src.state_compat import canonical_documents, canonical_findings, canonical_report, canonical_report_text, canonical_usage
 from src.utils.exports import ReportExporter
 from src.utils.history import ResearchHistory
@@ -221,9 +220,13 @@ async def run_research_with_updates(topic: str, progress_display: EnhancedProgre
     progress_callback.register_async(on_progress)
     
     try:
-        initial_state = start_run(create_new_run_state(topic))
-        graph = create_research_graph()
-        final_state = apply_terminal_lifecycle(await graph.ainvoke(initial_state))
+        # Web deliberately bypasses cache and Memory persistence, but still
+        # uses the same lifecycle, diagnostics, and error boundary as CLI.
+        final_state = await ResearchRunner(
+            use_cache=False,
+            use_checkpoints=False,
+            persist_memory=False,
+        ).run(topic, verbose=False)
         
         documents = canonical_documents(final_state)
         findings = canonical_findings(final_state)

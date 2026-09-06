@@ -3,7 +3,7 @@
 import asyncio
 from uuid import UUID
 
-from src import graph as graph_module
+from src import runner as graph_module
 from src.runtime_lifecycle import (
     classify_terminal_lifecycle,
     completed_lifecycle_patch,

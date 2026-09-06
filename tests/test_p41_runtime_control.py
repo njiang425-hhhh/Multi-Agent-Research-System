@@ -6,7 +6,7 @@ from time import perf_counter
 
 import pytest
 
-from src import graph as graph_module
+from src import runner as graph_module
 from src.execution_policy import (
     ExecutionContextCoordinator,
     OperationBudgetExhausted,

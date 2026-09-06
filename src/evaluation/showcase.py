@@ -528,7 +528,7 @@ def manual_deepseek_tavily_showcase_runner() -> ShowcaseRunner:
         raise RuntimeError("manual showcase requires DEEPSEEK_API_KEY and TAVILY_API_KEY")
 
     async def run_case(case: ShowcaseCase) -> Any:
-        from src.graph import run_research
+        from src.runner import run_research
 
         return await run_research(
             case.query,

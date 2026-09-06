@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from langchain_core.runnables import RunnableLambda
 
-from src import graph as graph_module
+from src import runner as graph_module
 from src.agents import ResearchPlanner, ResearchSearcher
 from src.evidence.contracts import Evidence
 from src.memory import (

@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from langgraph.graph import END, START, StateGraph
 
-from src import graph as graph_module
+from src import runner as graph_module
 from src.runtime_lifecycle import create_new_run_state, start_run
 from src.state import ResearchState
 

@@ -121,7 +121,7 @@ def _quality_statuses(evaluation: Any) -> dict[str, str]:
 
 
 async def _run_arm(case: Any, mode: str, concurrency: int) -> dict[str, Any]:
-    from src.graph import run_research
+    from src.runner import run_research
 
     started = perf_counter()
     with _temporary_writer_mode(mode, concurrency):
