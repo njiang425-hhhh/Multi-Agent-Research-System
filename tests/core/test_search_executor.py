@@ -4,6 +4,8 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
+import pytest
+
 from src.runtime_control import RunPolicy, create_execution_context
 from src.search.config import SearchConfig
 from src.search.executor import SearchExecutor
@@ -42,6 +44,11 @@ def _result(query: str, url: str) -> dict[str, str]:
         "url": url,
         "snippet": f"Snippet for {url}",
     }
+
+
+def test_search_config_rejects_removed_legacy_agent_mode() -> None:
+    with pytest.raises(ValueError, match="deterministic_v2"):
+        SearchConfig(mode="legacy_agent")  # type: ignore[arg-type]
 
 
 def test_search_executor_enforces_search_budget() -> None:

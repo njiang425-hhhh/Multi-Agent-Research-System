@@ -7,9 +7,10 @@ from typing import Any, Dict, List
 from src.runtime_lifecycle import failed_lifecycle_patch
 from src.state import ResearchState, UsageMetrics
 from src.state_compat import canonical_iteration, canonical_usage
+from src.config import config
 
 
-LLM_OPERATION_TIMEOUT_SECONDS = 90
+LLM_OPERATION_TIMEOUT_SECONDS = config.llm_operation_timeout_seconds
 
 
 def _legacy_attempt_limit_to_retries(max_attempts: int) -> int:

@@ -1,7 +1,7 @@
 """深度研究代理的配置管理。"""
 
 import os
-from typing import Literal, Optional
+from typing import Optional
 from pathlib import Path
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -68,6 +68,12 @@ class ResearchConfig(BaseModel):
         default=os.getenv("SUMMARIZATION_MODEL", "gemini-2.5-flash"),
         description="用于总结搜索结果的模型（更快/更便宜）"
     )
+
+    llm_operation_timeout_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("LLM_OPERATION_TIMEOUT_SECONDS", "180")),
+        gt=0,
+        description="单次 LLM operation 的本地 deadline（秒）"
+    )
     
     # 搜索提供商配置
     search_provider: str = Field(
@@ -111,17 +117,6 @@ class ResearchConfig(BaseModel):
     min_section_words: int = Field(
         default=200,
         description="每个章节的最少字数"
-    )
-
-    writer_section_execution_mode: Literal["serial", "bounded"] = Field(
-        default=os.getenv("WRITER_SECTION_EXECUTION_MODE", "serial"),
-        description="Writer 章节执行模式：'serial' 或实验性 'bounded'"
-    )
-
-    writer_section_concurrency: int = Field(
-        default=int(os.getenv("WRITER_SECTION_CONCURRENCY", "2")),
-        ge=1,
-        description="实验性 bounded Writer 章节并发上限"
     )
 
     research_memory_enabled: bool = Field(
@@ -242,4 +237,5 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logger.info(f"配置已加载 - MAX_SEARCH_QUERIES：{config.max_search_queries}，"
            f"MAX_SEARCH_RESULTS_PER_QUERY：{config.max_search_results_per_query}，"
-           f"MAX_REPORT_SECTIONS：{config.max_report_sections}")
+           f"MAX_REPORT_SECTIONS：{config.max_report_sections}，"
+           f"LLM_OPERATION_TIMEOUT_SECONDS：{config.llm_operation_timeout_seconds}")

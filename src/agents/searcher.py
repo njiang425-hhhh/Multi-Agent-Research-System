@@ -35,8 +35,6 @@ from src.utils.tools import get_research_tools
 
 logger = logging.getLogger(__name__)
 
-# Retained as a public import constant for explicit legacy configuration only.
-SEARCHER_AGENT_RECURSION_LIMIT = 12
 SEARCHER_ADAPTIVE_MAX_ROUNDS = 1
 SEARCHER_ADAPTIVE_TIMEOUT_SECONDS = 30.0
 SEARCHER_ADAPTIVE_MAX_SEARCH_CALLS = 1
@@ -190,17 +188,12 @@ class ResearchSearcher:
         return merged, appended, content_upgrades
 
     async def search(self, state: ResearchState) -> Dict[str, Any]:
-        """Return canonical deterministic results or dispatch explicit legacy mode."""
+        """Execute the canonical deterministic search path."""
         plan = _research_plan(state)
         if not plan:
             await emit_error("没有可用的研究计划")
             return {"error": "没有可用的研究计划", **failed_lifecycle_patch()}
-        if self.search_config.mode == "deterministic_v2":
-            return await self._search_with_executor(state)
-
-        from src.agents.compat.autonomous_searcher import run_legacy_autonomous_search
-
-        return await run_legacy_autonomous_search(self, state)
+        return await self._search_with_executor(state)
 
     async def _search_with_executor(self, state: ResearchState) -> Dict[str, Any]:
         """Run deterministic_v2 and return canonical state updates."""
@@ -247,7 +240,7 @@ class ResearchSearcher:
         search_args = dict(
             max_results_per_search=self.search_config.max_results_per_search,
         )
-        # Keep direct legacy executor doubles compatible when there is no P4
+        # Keep direct injected executor doubles compatible when there is no P4
         # runtime context; runner-created states always supply one.
         if state.execution_context is not None:
             search_args["execution_context"] = state.execution_context
@@ -456,17 +449,4 @@ class ResearchSearcher:
             result_patch["execution_context"] = latest_execution_context
         return result_patch
 
-    @staticmethod
-    def _extract_results_from_messages(messages: list) -> List[SearchResult]:
-        """Compatibility parser for callers of the historical Searcher method."""
-        from src.agents.compat.autonomous_searcher import extract_results_from_messages
-
-        return extract_results_from_messages(messages)
-
-# =============================================================================
-# 研究综合代理
-# =============================================================================
-
-
-
-__all__ = ["ResearchSearcher", "SEARCHER_AGENT_RECURSION_LIMIT"]
+__all__ = ["ResearchSearcher"]

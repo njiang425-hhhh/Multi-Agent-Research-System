@@ -56,14 +56,13 @@ lease、resume、terminal classification 与 Memory persistence 均属于 Runner
 
 ## 搜索与来源追溯
 
-`SEARCHER_MODE=deterministic_v2` 是受支持模式。`SearchExecutor` 拥有计划查询预算、提取
+`SearchExecutor` 是唯一受支持的搜索执行器，拥有计划查询预算、提取
 上限、重试、URL 去重、可信度稳定排序和 provider attempt record。Searcher 将唯一
 authoritative 的 `SearchExecutionStats` 投影到 usage、trace event 与 diagnostics，保证
 search/extract 统计一致。
 
 当计划查询 coverage 不完整时，可执行一次可选的 supplementary search/extract。它复用现有
-计划、严格有界，并且不新增 Graph edge。历史 autonomous tool-agent loop 被隔离到
-`src/agents/compat/autonomous_searcher.py`，只在显式请求 `legacy_agent` 时运行。
+计划、严格有界，并且不新增 Graph edge。
 
 Documents 构成 citation map：它们唯一且顺序稳定，并且是 Writer 唯一的 bibliography。
 Findings 引用 `document_id`，citation number 也依据相同的有序 Documents 解析。

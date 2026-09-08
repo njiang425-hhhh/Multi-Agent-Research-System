@@ -76,6 +76,16 @@ CLI 会将 canonical 报告写入 `outputs/`。Chainlit 演示使用同一个 `R
 未使用 `.env` 覆盖时，代码默认使用 Gemini 和 DuckDuckGo；请使用相匹配的 provider/key
 组合，不要将示例配置与默认回退配置混用。
 
+## Timeout 配置
+
+| 配置项 | 默认值 | 作用范围 |
+|---|---:|---|
+| `LLM_OPERATION_TIMEOUT_SECONDS` | 180 秒 | 每次 Planner、Synthesizer 或 Writer 的 LLM operation。本地 deadline 会与可选 `RunPolicy` 的全局剩余 deadline 取较小值。 |
+| `SEARCHER_TOTAL_TIMEOUT_SECONDS` | 90 秒 | 确定性 SearchExecutor 的总 timeout；不受 LLM timeout 配置影响。 |
+
+可在 `.env` 中覆盖，例如 `LLM_OPERATION_TIMEOUT_SECONDS=240`。未提供 `RunPolicy.total_timeout_seconds`
+时，run 没有全局 deadline；提供后，它不会替代 LLM timeout，而是进一步收紧每次 operation 的有效 deadline。
+
 ## 可选能力
 
 | 能力 | 默认值 | 作用范围 |
@@ -83,8 +93,6 @@ CLI 会将 canonical 报告写入 `outputs/`。Chainlit 演示使用同一个 `R
 | 本地 Memory | 关闭 | 有界词法检索和可选的完成后持久化；不会作为 Writer 输入。 |
 | Evidence sidecar | 关闭 | 来源分析与 grounding 观测；不会改变 Graph 路由。 |
 | SQLite checkpoint/resume | 普通运行关闭 | 带 lease 的显式持久化运行/恢复路径。 |
-| 有界 Writer 并发 | 串行 | 可选配置，不属于默认作品集叙事。 |
-| legacy autonomous Searcher | 关闭 | 仅支持显式 `legacy_agent` 兼容模式。 |
 
 ## 评估与 Showcase
 
