@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import re
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
@@ -21,7 +20,6 @@ from src.agents._llm_support import (
 )
 from src.callbacks import emit_error, emit_writing_complete, emit_writing_section, emit_writing_start
 from src.config import config
-from src.execution_policy import ExecutionContextCoordinator
 from src.exceptions import ReportGenerationError
 from src.llm.factory import get_llm
 from src.llm_execution import execute_llm_operation
@@ -76,6 +74,119 @@ def _writer_ready_findings(findings: List[Finding], documents: List[Document]) -
     ]
 
 
+def _scope_terms(value: str) -> set[str]:
+    """Return deterministic, language-agnostic terms for lightweight matching."""
+
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", " ", value.casefold())
+    words = set(re.findall(r"[a-z0-9_]{2,}", normalized))
+    chinese = "".join(re.findall(r"[\u4e00-\u9fff]", normalized))
+    # Bigrams keep Chinese matching useful without introducing a tokenizer dependency.
+    words.update(chinese[index : index + 2] for index in range(max(0, len(chinese) - 1)))
+    return words
+
+
+def _scope_score(finding: Finding, section_title: str, section_objective: str) -> int:
+    finding_terms = _scope_terms(finding.statement)
+    title_terms = _scope_terms(section_title)
+    objective_terms = _scope_terms(section_objective)
+    # A title match is a stronger signal than a broad research objective.
+    return 3 * len(finding_terms & title_terms) + len(finding_terms & objective_terms)
+
+
+@dataclass(frozen=True, slots=True)
+class _SectionScope:
+    identifier: str
+    index: int
+    title: str
+    objective: str
+    primary_findings: list[Finding]
+    supporting_findings: list[Finding] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _WritingContext:
+    """Transient serial-writer context; it deliberately never enters State."""
+
+    used_finding_ids: list[str] = field(default_factory=list)
+    previous_section_summary: str = ""
+
+
+def _section_scopes(plan, findings: List[Finding]) -> list[_SectionScope]:
+    """Assign every finding to exactly one stable, primary section.
+
+    ResearchPlan currently exposes titles and top-level objectives rather than
+    per-section objectives.  The objective at the matching outline index is the
+    narrowest available signal; the title itself remains the fallback objective.
+    """
+
+    outline = list(getattr(plan, "report_outline", ()) or ())
+    objectives = list(getattr(plan, "objectives", ()) or ())
+    scopes = [
+        _SectionScope(
+            identifier=f"section:{index}",
+            index=index,
+            title=title,
+            objective=objectives[index - 1] if index <= len(objectives) else title,
+            primary_findings=[],
+        )
+        for index, title in enumerate(outline, 1)
+    ]
+    if not scopes:
+        return scopes
+
+    primary_by_section: dict[str, list[Finding]] = {scope.identifier: [] for scope in scopes}
+    for finding in findings:
+        # max is stable: ties intentionally retain the earliest outline section.
+        selected = max(
+            scopes,
+            key=lambda scope: (_scope_score(finding, scope.title, scope.objective), -scope.index),
+        )
+        primary_by_section[selected.identifier].append(finding)
+
+    return [
+        _SectionScope(
+            identifier=scope.identifier,
+            index=scope.index,
+            title=scope.title,
+            objective=scope.objective,
+            primary_findings=primary_by_section[scope.identifier],
+        )
+        for scope in scopes
+    ]
+
+
+def _documents_for_findings(findings: Iterable[Finding], documents: List[Document]) -> list[Document]:
+    """Select scoped source documents while retaining their canonical order."""
+
+    source_ids = {
+        source_id
+        for finding in findings
+        for source_id in finding.source_document_ids
+    }
+    return [document for document in documents if document.document_id in source_ids]
+
+
+def _summary_from_section(content: str, limit: int = 420) -> str:
+    """Keep only a compact, heading-free carry-forward summary for the next section."""
+
+    plain = re.sub(r"(?m)^\s{0,3}#{1,6}\s+.*$", "", content)
+    plain = re.sub(r"\s+", " ", plain).strip()
+    return plain[:limit]
+
+
+def _section_body(content: str) -> str:
+    """Remove model-authored structural headings; report structure is code-owned."""
+
+    content = re.sub(r"(?m)^\s{0,3}#{1,6}\s+.*$\n?", "", content)
+    content = re.sub(r"(?m)^\s*(?:第\s*\d+\s*章|\d+(?:\.\d+)+\.?)\s+.*$\n?", "", content)
+    return content.strip()
+
+
+def _reserved_heading(title: str) -> bool:
+    normalized = re.sub(r"\s+", " ", title).strip().casefold()
+    return normalized in {"executive summary", "执行摘要", "research objectives", "研究目标", "references", "参考文献"}
+
+
 @dataclass(slots=True)
 class _WriterSectionBatch:
     sections: list[ReportSection]
@@ -92,16 +203,12 @@ class ReportWriter:
         citation_formatter: Optional[CitationFormatter] = None,
         citation_style: str = 'apa',
         max_retries: int = 3,
-        section_execution_mode: Literal["serial", "bounded"] | None = None,
-        section_concurrency: int | None = None,
     ):
         self.llm = llm or get_llm(temperature=0.7)
         self.tools = get_research_tools(agent_type="writing")
         self.max_retries = max_retries
         self.citation_style = citation_style
         self.citation_formatter = citation_formatter or CitationFormatter()
-        self.section_execution_mode = section_execution_mode or config.writer_section_execution_mode
-        self.section_concurrency = max(1, section_concurrency or config.writer_section_concurrency)
 
     async def write_report(self, state: ResearchState) -> Dict[str, Any]:
         """通过验证和重试撰写最终研究报告。
@@ -185,8 +292,6 @@ class ReportWriter:
         documents: List[Document],
         findings: List[Finding],
     ) -> _WriterSectionBatch:
-        if self.section_execution_mode == "bounded" and self.section_concurrency > 1:
-            return await self._write_sections_bounded(state, documents, findings)
         return await self._write_sections_serial(state, documents, findings)
 
     async def _write_sections_serial(
@@ -198,21 +303,29 @@ class ReportWriter:
         report_sections: list[ReportSection] = []
         report_call_details: list[dict[str, Any]] = []
         current_context = state.execution_context
-        total_sections = len(_research_plan(state).report_outline) if _research_plan(state) else 0
+        scopes = [
+            scope for scope in _section_scopes(_research_plan(state), findings)
+            if not _reserved_heading(scope.title)
+        ]
+        total_sections = len(scopes)
+        writing_context = _WritingContext()
 
         try:
-            for section_idx, section_title in enumerate(_research_plan(state).report_outline, 1):
-                await emit_writing_section(section_title, section_idx, total_sections)
+            for section_idx, scope in enumerate(scopes, 1):
+                await emit_writing_section(scope.title, section_idx, total_sections)
                 section, section_details, current_context = await self._write_section_result(
                     state,
-                    section_idx - 1,
-                    section_title,
+                    scope,
                     documents,
-                    findings,
+                    writing_context,
                     current_context,
                 )
                 if section:
                     report_sections.append(section)
+                    for finding in scope.primary_findings + scope.supporting_findings:
+                        if finding.finding_id and finding.finding_id not in writing_context.used_finding_ids:
+                            writing_context.used_finding_ids.append(finding.finding_id)
+                    writing_context.previous_section_summary = _summary_from_section(section.content)
                 report_call_details.extend(section_details)
         except Exception as error:
             details = report_call_details + list(getattr(error, "llm_call_details", ()) or ())
@@ -227,114 +340,29 @@ class ReportWriter:
             execution_context=current_context,
         )
 
-    async def _write_sections_bounded(
-        self,
-        state: ResearchState,
-        documents: List[Document],
-        findings: List[Finding],
-    ) -> _WriterSectionBatch:
-        outline = list(_research_plan(state).report_outline) if _research_plan(state) else []
-        total_sections = len(outline)
-        coordinator = ExecutionContextCoordinator(state.execution_context)
-        results: list[tuple[ReportSection | None, list[dict[str, Any]]] | None] = [
-            None for _ in outline
-        ]
-        failures: dict[int, Exception] = {}
-        failure_observed = asyncio.Event()
-        queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
-        for index, section_title in enumerate(outline):
-            await emit_writing_section(section_title, index + 1, total_sections)
-            queue.put_nowait((index, section_title))
-
-        async def worker() -> None:
-            while not failure_observed.is_set():
-                try:
-                    index, section_title = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    return
-                if failure_observed.is_set():
-                    queue.task_done()
-                    return
-                try:
-                    section, section_details, _context = await self._write_section_result(
-                        state,
-                        index,
-                        section_title,
-                        documents,
-                        findings,
-                        coordinator,
-                    )
-                    results[index] = (section, section_details)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as error:
-                    failures[index] = error
-                    failure_observed.set()
-                finally:
-                    queue.task_done()
-
-        worker_count = min(self.section_concurrency, total_sections)
-        tasks = [asyncio.create_task(worker()) for _ in range(worker_count)]
-        try:
-            await asyncio.gather(*tasks)
-        except asyncio.CancelledError:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
-
-        ordered_details = self._ordered_section_details(results, failures, total_sections)
-        if failures:
-            primary_index = min(failures)
-            primary = failures[primary_index]
-            setattr(primary, "llm_call_details", ordered_details)
-            if getattr(primary, "execution_context", None) is None and coordinator.context is not None:
-                setattr(primary, "execution_context", coordinator.context)
-            raise primary
-
-        return _WriterSectionBatch(
-            sections=[
-                section
-                for item in results
-                if item is not None
-                for section in [item[0]]
-                if section is not None
-            ],
-            call_details=ordered_details,
-            execution_context=coordinator.context,
-        )
-
-    def _ordered_section_details(
-        self,
-        results: list[tuple[ReportSection | None, list[dict[str, Any]]] | None],
-        failures: dict[int, Exception],
-        total_sections: int,
-    ) -> list[dict[str, Any]]:
-        details: list[dict[str, Any]] = []
-        for index in range(total_sections):
-            if results[index] is not None:
-                details.extend(results[index][1])
-            elif index in failures:
-                details.extend(list(getattr(failures[index], "llm_call_details", ()) or ()))
-        return details
-
     async def _write_section_result(
         self,
         state: ResearchState,
-        section_index: int,
-        section_title: str,
+        scope: _SectionScope,
         documents: List[Document],
-        findings: List[Finding],
+        writing_context: _WritingContext,
         execution_context=None,
     ) -> tuple[ReportSection | None, list[dict[str, Any]], Any]:
         section_kwargs: dict[str, Any] = {}
         if execution_context is not None:
             section_kwargs["execution_context"] = execution_context
+        scoped_findings = scope.primary_findings + scope.supporting_findings
+        supporting_documents = _documents_for_findings(scoped_findings, documents)
         written = await self._write_section(
             _research_query(state),
-            section_title,
-            findings,
-            documents,
+            scope.title,
+            scope.primary_findings,
+            supporting_documents,
+            section_objective=scope.objective,
+            supporting_findings=scope.supporting_findings,
+            used_finding_ids=list(writing_context.used_finding_ids),
+            previous_section_summary=writing_context.previous_section_summary,
+            citation_documents=documents,
             **section_kwargs,
         )
         # Existing tests and external injection seams return the old two-tuple.
@@ -346,7 +374,7 @@ class ReportWriter:
             raw_details = [legacy_detail] if isinstance(legacy_detail, dict) else []
             current_context = execution_context
         section_details = [
-            self._annotate_section_detail(detail, section_index, section_title)
+            self._annotate_section_detail(detail, scope.index - 1, scope.title)
             for detail in (raw_details or [])
             if isinstance(detail, dict)
         ]
@@ -361,8 +389,6 @@ class ReportWriter:
         annotated = dict(detail)
         annotated.setdefault("section_index", section_index)
         annotated.setdefault("section_title", section_title)
-        annotated.setdefault("writer_execution_mode", self.section_execution_mode)
-        annotated.setdefault("writer_section_concurrency", self.section_concurrency)
         return annotated
 
     async def _write_section(
@@ -371,10 +397,20 @@ class ReportWriter:
         section_title: str,
         findings: List[Finding],
         documents: List[Document],
+        *,
+        section_objective: str | None = None,
+        supporting_findings: List[Finding] | None = None,
+        used_finding_ids: List[str] | None = None,
+        previous_section_summary: str = "",
+        citation_documents: List[Document] | None = None,
         execution_context=None,
     ) -> tuple:
         """Write one section; runtime owns retries, budget, and deadline."""
         logger.info(f"正在撰写章节：{section_title}")
+
+        supporting_findings = supporting_findings or []
+        used_finding_ids = used_finding_ids or []
+        citation_documents = citation_documents or documents
 
         system_prompt = WRITER_SYSTEM_PROMPT.format(min_words=config.min_section_words)
 
@@ -385,24 +421,34 @@ class ReportWriter:
 
         sources_context = ""
         if documents:
+            supporting_document_ids = {document.document_id for document in documents}
             sources_context = "\n可用于引用的来源：\n" + "\n".join(
-                f"[{i+1}] {document.title} ({document.uri})"
-                for i, document in enumerate(documents)
+                f"[{index + 1}] {document.title} ({document.uri})"
+                for index, document in enumerate(citation_documents)
+                if document.document_id in supporting_document_ids
             )
-        input_message = WRITER_USER_TEMPLATE.format(
-            topic=topic,
-            section_title=section_title,
-            min_words=config.min_section_words,
-            findings=chr(10).join(
-                f"- {finding.statement}（建议来源："
+
+        def render_findings(items: List[Finding]) -> str:
+            return chr(10).join(
+                f"- ({finding.finding_id}) {finding.statement}（建议来源："
                 + ", ".join(
                     f"[{index + 1}]"
-                    for index, document in enumerate(documents)
+                    for index, document in enumerate(citation_documents)
                     if document.document_id in finding.source_document_ids
                 )
                 + "）"
-                for finding in findings
-            ),
+                for finding in items
+            ) or "- 无"
+
+        input_message = WRITER_USER_TEMPLATE.format(
+            topic=topic,
+            section_title=section_title,
+            section_objective=section_objective or section_title,
+            min_words=config.min_section_words,
+            primary_findings=render_findings(findings),
+            supporting_findings=render_findings(supporting_findings),
+            used_finding_ids=", ".join(used_finding_ids) or "无",
+            previous_section_summary=previous_section_summary or "无（这是正文第一章）",
             sources_context=sources_context,
         )
         chain = prompt | self.llm | StrOutputParser()
@@ -428,16 +474,17 @@ class ReportWriter:
 
         def keep_valid_citation(match: re.Match[str]) -> str:
             number = int(match.group(1))
-            return match.group(0) if 1 <= number <= len(documents) else ""
+            return match.group(0) if 1 <= number <= len(citation_documents) else ""
 
+        content = _section_body(content)
         content = re.sub(r'\[(\d+)\]', keep_valid_citation, content)
         citations = re.findall(r'\[(\d+)\]', content)
         source_urls = []
         seen_source_urls = set()
         for cite_num in citations:
             idx = int(cite_num) - 1
-            if 0 <= idx < len(documents):
-                url = documents[idx].uri
+            if 0 <= idx < len(citation_documents):
+                url = citation_documents[idx].uri
                 if url and url not in seen_source_urls:
                     seen_source_urls.add(url)
                     source_urls.append(url)
@@ -475,30 +522,21 @@ class ReportWriter:
 
         report_parts.append("\n---\n")
 
-        has_references_section = False
-        for section in report_sections:
-            content = section.content.strip()
+        body_sections = [section for section in report_sections if not _reserved_heading(section.title)]
+        for section_number, section in enumerate(body_sections, 1):
+            # Apply the boundary again for injected/legacy section writers.
+            content = _section_body(section.content)
+            report_parts.append(f"\n## {section_number}. {section.title}\n\n")
+            report_parts.append(content)
+            report_parts.append("\n")
 
-            if "## References" in content or section.title.lower() in {"references", "参考文献"}:
-                has_references_section = True
-
-            if content.startswith(f"## {section.title}"):
-                report_parts.append(f"\n{content}\n\n")
-            else:
-                report_parts.append(f"\n## {section.title}\n\n")
-                report_parts.append(content)
-                report_parts.append("\n")
-
-        if not has_references_section:
-            report_parts.append("\n---\n\n## 参考文献\n\n")
-
-        if not has_references_section:
-            if documents:
-                for i, document in enumerate(documents, 1):
-                    citation = self._format_citation(document)
-                    report_parts.append(f"{i}. {citation}\n")
-            else:
-                report_parts.append("*本次研究没有可用来源。*\n")
+        report_parts.append("\n---\n\n## 参考文献\n\n")
+        if documents:
+            for i, document in enumerate(documents, 1):
+                citation = self._format_citation(document)
+                report_parts.append(f"{i}. {citation}\n")
+        else:
+            report_parts.append("*本次研究没有可用来源。*\n")
 
         return "".join(report_parts)
 
